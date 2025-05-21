@@ -12,6 +12,7 @@ echo Setting up ESP-IDF environment...
 set IDF_PATH=C:\Espressif\frameworks\esp-idf-v5.4.1
 set IDF_PYTHON_ENV_PATH=C:\Espressif\python_env\idf5.4_py3.11_env
 set PATH=%IDF_PYTHON_ENV_PATH%\Scripts;C:\Users\Administrator\.espressif\tools\ninja\1.12.1;C:\Users\Administrator\.espressif\tools\cmake\3.30.2\bin;C:\Users\Administrator\.espressif\tools\xtensa-esp-elf\esp-14.2.0_20241119\xtensa-esp-elf\bin;C:\Users\Administrator\.espressif\tools\riscv32-esp-elf\esp-14.2.0_20241119\riscv32-esp-elf\bin;%PATH%
+set ESP_ROM_ELF_DIR=C:\Users\Administrator\.espressif\tools\esp-rom-elfs\20240201
 
 REM Create constraints file
 echo Creating constraints file...
@@ -56,13 +57,13 @@ if %ERRORLEVEL% EQU 0 (
     echo                 BUILD SUCCESSFUL!
     echo ========================================================
     echo.
-    echo Binary size: 
+    echo Binary size:
     findstr /C:"esp32controlboard.bin binary size" build_log.txt
     echo.
-    echo To flash the project, run: 
+    echo To flash the project, run:
     echo idf.py -p [PORT] flash
     echo.
-    echo To monitor the output, run: 
+    echo To monitor the output, run:
     echo idf.py -p [PORT] monitor
     echo.
     echo Build log saved to build_log.txt

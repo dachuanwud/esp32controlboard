@@ -80,11 +80,11 @@ ESP32 控制板是一个基于 ESP32 微控制器平台的复杂电机控制系�
 | RIGHT_BK_PIN | GPIO_NUM_22 | 右电机刹车 |
 | **通信** |
 | UART_DEBUG | UART0 | 调试串口（默认引脚） |
-| UART_SBUS | UART2 (RX: GPIO16) | SBUS 接收器输入 |
-| UART_CMD | UART1 (RX: GPIO17) | 命令速度输入 |
+| UART_SBUS | UART2 (RX: GPIO22) | SBUS 接收器输入（使用UART_INVERT_RXD） |
+| UART_CMD | UART1 (RX: GPIO21) | 命令速度输入 |
 | **CAN 总线 (TWAI)** |
-| CAN_TX | GPIO_NUM_21 | CAN 总线发送（需要外部收发器） |
-| CAN_RX | GPIO_NUM_22 | CAN 总线接收（需要外部收发器） |
+| CAN_TX | GPIO_NUM_16 | CAN 总线发送（连接到SN65HVD232D的D引脚） |
+| CAN_RX | GPIO_NUM_17 | CAN 总线接收（连接到SN65HVD232D的R引脚） |
 
 ### CAN 总线配置
 
@@ -92,7 +92,7 @@ ESP32 控制板是一个基于 ESP32 微控制器平台的复杂电机控制系�
 - **波特率**：250 Kbps
 - **模式**：正常模式
 - **过滤器**：接受所有消息
-- **所需外部硬件**：CAN 收发器（例如 SN65HVD230、TJA1050）
+- **所需外部硬件**：CAN 收发器（使用SN65HVD232D）
 
 ## 项目结构
 
@@ -176,8 +176,9 @@ esp32controlboard/
 
 1. **硬件设置**：
    - 通过 USB 将 ESP32 连接到计算机
-   - 将 SBUS 接收器连接到 GPIO16（UART2 RX）
-   - 将 CAN 收发器连接到 GPIO21（TX）和 GPIO22（RX）
+   - 将 SBUS 接收器直接连接到 GPIO22（UART2 RX）- 使用UART_INVERT_RXD功能，无需外部反相器
+   - 将 CAN 收发器SN65HVD232D连接到 GPIO16（TX）和 GPIO17（RX）
+   - 将 CMD_VEL 信号连接到 GPIO21（UART1 RX）
    - 将 CAN 收发器连接到 LKBLS481502 电机驱动器
    - 将电机连接到驱动器
 
@@ -206,7 +207,7 @@ ESP32 的 TWAI 模块需要外部 CAN 收发器才能与 CAN 总线接口。收�
 
 ### SBUS 协议
 
-SBUS 是许多遥控接收器使用的数字串行协议。它以 100,000 波特率运行，采用反相逻辑、8 个数据位、偶校验和 2 个停止位。
+SBUS 是许多遥控接收器使用的数字串行协议。它以 100,000 波特率运行，采用反相逻辑、8 个数据位、偶校验和 2 个停止位。本项目使用 ESP32 的 UART_INVERT_RXD 功能直接接收 SBUS 信号，无需外部反相器电路，简化了硬件设计。
 
 ### 电机控制
 

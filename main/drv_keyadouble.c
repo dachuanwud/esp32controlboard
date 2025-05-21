@@ -24,8 +24,9 @@ static const char *TAG = "DRV_KEYA";
 uint8_t bk_flag_left = 0;
 uint8_t bk_flag_right = 0;
 
-// TWAI (CAN) 配置
-static const twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_21, GPIO_NUM_22, TWAI_MODE_NORMAL);
+// TWAI (CAN) 配置 - 根据电路图SN65HVD232D CAN收发电路
+// IO16连接到SN65HVD232D的D引脚(TX)，IO17连接到R引脚(RX)
+static const twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_16, GPIO_NUM_17, TWAI_MODE_NORMAL);
 static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
 static const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -134,30 +135,6 @@ static void motor_control(uint8_t cmd_type, uint8_t channel, int8_t speed)
  */
 esp_err_t drv_keyadouble_init(void)
 {
-    // 初始化GPIO
-    gpio_config_t io_conf = {};
-
-    // 配置刹车引脚
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << LEFT_BK_PIN) | (1ULL << RIGHT_BK_PIN);
-    io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 0;
-    gpio_config(&io_conf);
-
-    // 配置电机控制引脚
-    io_conf.pin_bit_mask = (1ULL << LEFT_EN_PIN) | (1ULL << LEFT_DIR_PIN) |
-                          (1ULL << RIGHT_DIR_PIN) | (1ULL << RIGHT_EN_PIN);
-    gpio_config(&io_conf);
-
-    // 设置初始状态
-    gpio_set_level(LEFT_BK_PIN, 0);
-    gpio_set_level(RIGHT_BK_PIN, 0);
-    gpio_set_level(LEFT_EN_PIN, 1);
-    gpio_set_level(LEFT_DIR_PIN, 1);
-    gpio_set_level(RIGHT_DIR_PIN, 1);
-    gpio_set_level(RIGHT_EN_PIN, 1);
-
     // 初始化TWAI (CAN)
     ESP_ERROR_CHECK(twai_driver_install(&g_config, &t_config, &f_config));
     ESP_ERROR_CHECK(twai_start());
@@ -179,20 +156,17 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right)
         return 1;
     }
 
-    // 左侧刹车控制 (A路)
+    // 更新刹车标志
     if (speed_left != 0) {
-        bk_flag_left = 1;
-        gpio_set_level(LEFT_BK_PIN, 1); // 高电平解除刹车，允许转动
+        bk_flag_left = 1; // 1为松开
     } else {
-        bk_flag_left = 0; // 0为刹车，1为松开
+        bk_flag_left = 0; // 0为刹车
     }
 
-    // 右侧刹车控制 (B路)
     if (speed_right != 0) {
-        bk_flag_right = 1;
-        gpio_set_level(RIGHT_BK_PIN, 1);
+        bk_flag_right = 1; // 1为松开
     } else {
-        bk_flag_right = 0; // 0为刹车，1为松开
+        bk_flag_right = 0; // 0为刹车
     }
 
     // 使能电机两路电机

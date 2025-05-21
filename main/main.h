@@ -16,15 +16,19 @@
 #include "esp_err.h"
 
 // 定义GPIO引脚
-#define LED_BLUE_PIN            GPIO_NUM_2   // 蓝色LED指示灯
+// LED指示灯引脚
+#define LED_RED_PIN             GPIO_NUM_25  // 红色LED指示灯
+#define LED_GREEN_PIN           GPIO_NUM_26  // 绿色LED指示灯
+#define LED_BLUE_PIN            GPIO_NUM_27  // 蓝色LED指示灯
 
-// 电机控制引脚
-#define LEFT_EN_PIN             GPIO_NUM_4   // 左电机使能
-#define LEFT_DIR_PIN            GPIO_NUM_5   // 左电机方向
-#define RIGHT_DIR_PIN           GPIO_NUM_18  // 右电机方向
-#define RIGHT_EN_PIN            GPIO_NUM_19  // 右电机使能
-#define LEFT_BK_PIN             GPIO_NUM_21  // 左电机刹车
-#define RIGHT_BK_PIN            GPIO_NUM_22  // 右电机刹车
+// 按键引脚
+#define KEY1_PIN                GPIO_NUM_0   // 按键1
+#define KEY2_PIN                GPIO_NUM_35  // 按键2
+
+// 电机控制引脚 (通过CAN总线控制，不需要直接GPIO控制)
+// CAN总线引脚定义:
+// - TX: GPIO_NUM_16 (连接到SN65HVD232D的D引脚)
+// - RX: GPIO_NUM_17 (连接到SN65HVD232D的R引脚)
 
 // PWM通道定义
 #define PWM_CHANNEL_1           LEDC_CHANNEL_0
@@ -33,10 +37,9 @@
 #define PWM_CHANNEL_4           LEDC_CHANNEL_3
 
 // UART定义
-#define UART_DEBUG              UART_NUM_0   // 调试串口
-#define UART_485                UART_NUM_1   // 485通信
-#define UART_SBUS               UART_NUM_2   // SBUS接收
-#define UART_CMD                UART_NUM_1   // CMD_VEL接收 (与485共用)
+#define UART_DEBUG              UART_NUM_0   // 调试串口 (通过CH340)
+#define UART_CMD                UART_NUM_1   // CMD_VEL接收 (RX: GPIO_NUM_21)
+#define UART_SBUS               UART_NUM_2   // SBUS接收 (RX: GPIO_NUM_22)
 
 // 缓冲区长度定义
 #define LEN_SBUS                25

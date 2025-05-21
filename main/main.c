@@ -42,8 +42,10 @@ typedef struct {
 static void brake_timer_left_callback(TimerHandle_t xTimer)
 {
     if (bk_flag_left == 0) {
-        gpio_set_level(LEFT_BK_PIN, 0);
+        // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Left brake applied");
+        // 红色LED亮起表示刹车
+        gpio_set_level(LED_RED_PIN, 1);
     }
 }
 
@@ -53,8 +55,10 @@ static void brake_timer_left_callback(TimerHandle_t xTimer)
 static void brake_timer_right_callback(TimerHandle_t xTimer)
 {
     if (bk_flag_right == 0) {
-        gpio_set_level(RIGHT_BK_PIN, 0);
+        // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Right brake applied");
+        // 红色LED亮起表示刹车
+        gpio_set_level(LED_RED_PIN, 1);
     }
 }
 
@@ -177,8 +181,8 @@ static void motor_control_task(void *pvParameters)
             cmd_timeout = xTaskGetTickCount() + pdMS_TO_TICKS(1000); // 1秒超时
             sbus_control = false;
 
-            // 切换LED状态实现闪烁
-            gpio_set_level(LED_BLUE_PIN, !gpio_get_level(LED_BLUE_PIN));
+            // 接收到CMD_VEL命令时，绿色LED闪烁
+            gpio_set_level(LED_GREEN_PIN, !gpio_get_level(LED_GREEN_PIN));
         }
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
@@ -187,7 +191,7 @@ static void motor_control_task(void *pvParameters)
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
 
-                // 切换LED状态实现闪烁
+                // 接收到SBUS命令时，蓝色LED闪烁
                 gpio_set_level(LED_BLUE_PIN, !gpio_get_level(LED_BLUE_PIN));
             }
         }
@@ -204,13 +208,38 @@ static void motor_control_task(void *pvParameters)
 static void status_monitor_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "状态监控任务已启动");
+    uint8_t led_state = 0;
 
     while (1) {
-        // 每500ms闪烁一次LED，表示系统正常运行
-        gpio_set_level(LED_BLUE_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_set_level(LED_BLUE_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(400));
+        // 循环显示不同颜色，表示系统正常运行
+        switch (led_state) {
+            case 0: // 红色
+                gpio_set_level(LED_RED_PIN, 1);
+                gpio_set_level(LED_GREEN_PIN, 0);
+                gpio_set_level(LED_BLUE_PIN, 0);
+                break;
+            case 1: // 绿色
+                gpio_set_level(LED_RED_PIN, 0);
+                gpio_set_level(LED_GREEN_PIN, 1);
+                gpio_set_level(LED_BLUE_PIN, 0);
+                break;
+            case 2: // 蓝色
+                gpio_set_level(LED_RED_PIN, 0);
+                gpio_set_level(LED_GREEN_PIN, 0);
+                gpio_set_level(LED_BLUE_PIN, 1);
+                break;
+            case 3: // 全部关闭
+                gpio_set_level(LED_RED_PIN, 0);
+                gpio_set_level(LED_GREEN_PIN, 0);
+                gpio_set_level(LED_BLUE_PIN, 0);
+                break;
+        }
+
+        // 更新状态
+        led_state = (led_state + 1) % 4;
+
+        // 延时500ms
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -223,12 +252,22 @@ static void gpio_init(void)
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << LED_BLUE_PIN);
+    io_conf.pin_bit_mask = (1ULL << LED_RED_PIN) | (1ULL << LED_GREEN_PIN) | (1ULL << LED_BLUE_PIN);
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
 
-    // 设置初始状态
+    // 配置按键引脚
+    io_conf.intr_type = GPIO_INTR_POSEDGE;  // 上升沿触发中断
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << KEY1_PIN) | (1ULL << KEY2_PIN);
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 1;  // 启用内部上拉电阻
+    gpio_config(&io_conf);
+
+    // 设置LED初始状态
+    gpio_set_level(LED_RED_PIN, 0);
+    gpio_set_level(LED_GREEN_PIN, 0);
     gpio_set_level(LED_BLUE_PIN, 0);
 }
 
@@ -255,7 +294,9 @@ static void uart_init(void)
     uart_config.baud_rate = 115200;
     ESP_ERROR_CHECK(uart_driver_install(UART_CMD, 256, 0, 20, &cmd_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_CMD, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_CMD, UART_PIN_NO_CHANGE, GPIO_NUM_17, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    // 注意：由于GPIO17现在用于CAN RX，我们需要使用其他引脚接收CMD_VEL信号
+    // 这里使用GPIO21作为CMD_VEL接收引脚，请根据实际硬件连接调整
+    ESP_ERROR_CHECK(uart_set_pin(UART_CMD, UART_PIN_NO_CHANGE, GPIO_NUM_21, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     // 创建CMD_VEL接收任务
     BaseType_t xReturned = xTaskCreate(
