@@ -16,10 +16,16 @@
 #include "esp_err.h"
 
 // 定义GPIO引脚
-// LED指示灯引脚
-#define LED_RED_PIN             GPIO_NUM_25  // 红色LED指示灯
-#define LED_GREEN_PIN           GPIO_NUM_26  // 绿色LED指示灯
-#define LED_BLUE_PIN            GPIO_NUM_27  // 蓝色LED指示灯
+// LED指示灯引脚 - 共阳极RGB LED
+// LED1组
+#define LED1_RED_PIN            GPIO_NUM_12  // LED1红色引脚
+#define LED1_GREEN_PIN          GPIO_NUM_13  // LED1绿色引脚
+#define LED1_BLUE_PIN           GPIO_NUM_14  // LED1蓝色引脚
+
+// LED2组
+#define LED2_RED_PIN            GPIO_NUM_25  // LED2红色引脚
+#define LED2_GREEN_PIN          GPIO_NUM_26  // LED2绿色引脚
+#define LED2_BLUE_PIN           GPIO_NUM_27  // LED2蓝色引脚
 
 // 按键引脚
 #define KEY1_PIN                GPIO_NUM_0   // 按键1

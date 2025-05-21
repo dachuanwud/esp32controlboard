@@ -44,8 +44,9 @@ static void brake_timer_left_callback(TimerHandle_t xTimer)
     if (bk_flag_left == 0) {
         // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Left brake applied");
-        // 红色LED亮起表示刹车
-        gpio_set_level(LED_RED_PIN, 1);
+        // 红色LED亮起表示刹车（共阳极LED，低电平点亮）
+        gpio_set_level(LED1_RED_PIN, 0);
+        gpio_set_level(LED2_RED_PIN, 0);
     }
 }
 
@@ -57,8 +58,9 @@ static void brake_timer_right_callback(TimerHandle_t xTimer)
     if (bk_flag_right == 0) {
         // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Right brake applied");
-        // 红色LED亮起表示刹车
-        gpio_set_level(LED_RED_PIN, 1);
+        // 红色LED亮起表示刹车（共阳极LED，低电平点亮）
+        gpio_set_level(LED1_RED_PIN, 0);
+        gpio_set_level(LED2_RED_PIN, 0);
     }
 }
 
@@ -181,8 +183,10 @@ static void motor_control_task(void *pvParameters)
             cmd_timeout = xTaskGetTickCount() + pdMS_TO_TICKS(1000); // 1秒超时
             sbus_control = false;
 
-            // 接收到CMD_VEL命令时，绿色LED闪烁
-            gpio_set_level(LED_GREEN_PIN, !gpio_get_level(LED_GREEN_PIN));
+            // 接收到CMD_VEL命令时，两组LED的绿色闪烁
+            // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
+            gpio_set_level(LED1_GREEN_PIN, !gpio_get_level(LED1_GREEN_PIN));
+            gpio_set_level(LED2_GREEN_PIN, !gpio_get_level(LED2_GREEN_PIN));
         }
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
@@ -191,8 +195,10 @@ static void motor_control_task(void *pvParameters)
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
 
-                // 接收到SBUS命令时，蓝色LED闪烁
-                gpio_set_level(LED_BLUE_PIN, !gpio_get_level(LED_BLUE_PIN));
+                // 接收到SBUS命令时，两组LED的蓝色闪烁
+                // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
+                gpio_set_level(LED1_BLUE_PIN, !gpio_get_level(LED1_BLUE_PIN));
+                gpio_set_level(LED2_BLUE_PIN, !gpio_get_level(LED2_BLUE_PIN));
             }
         }
 
@@ -212,26 +218,47 @@ static void status_monitor_task(void *pvParameters)
 
     while (1) {
         // 循环显示不同颜色，表示系统正常运行
+        // 注意：共阳极LED，低电平(0)点亮，高电平(1)熄灭
         switch (led_state) {
             case 0: // 红色
-                gpio_set_level(LED_RED_PIN, 1);
-                gpio_set_level(LED_GREEN_PIN, 0);
-                gpio_set_level(LED_BLUE_PIN, 0);
+                // LED1组
+                gpio_set_level(LED1_RED_PIN, 0);  // 红色点亮
+                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
+                // LED2组
+                gpio_set_level(LED2_RED_PIN, 0);  // 红色点亮
+                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
                 break;
             case 1: // 绿色
-                gpio_set_level(LED_RED_PIN, 0);
-                gpio_set_level(LED_GREEN_PIN, 1);
-                gpio_set_level(LED_BLUE_PIN, 0);
+                // LED1组
+                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED1_GREEN_PIN, 0); // 绿色点亮
+                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
+                // LED2组
+                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED2_GREEN_PIN, 0); // 绿色点亮
+                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
                 break;
             case 2: // 蓝色
-                gpio_set_level(LED_RED_PIN, 0);
-                gpio_set_level(LED_GREEN_PIN, 0);
-                gpio_set_level(LED_BLUE_PIN, 1);
+                // LED1组
+                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED1_BLUE_PIN, 0);  // 蓝色点亮
+                // LED2组
+                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED2_BLUE_PIN, 0);  // 蓝色点亮
                 break;
             case 3: // 全部关闭
-                gpio_set_level(LED_RED_PIN, 0);
-                gpio_set_level(LED_GREEN_PIN, 0);
-                gpio_set_level(LED_BLUE_PIN, 0);
+                // LED1组
+                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
+                // LED2组
+                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
+                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
+                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
                 break;
         }
 
@@ -248,11 +275,12 @@ static void status_monitor_task(void *pvParameters)
  */
 static void gpio_init(void)
 {
-    // 配置LED引脚
+    // 配置LED引脚 - 两组共阳极RGB LED
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << LED_RED_PIN) | (1ULL << LED_GREEN_PIN) | (1ULL << LED_BLUE_PIN);
+    io_conf.pin_bit_mask = (1ULL << LED1_RED_PIN) | (1ULL << LED1_GREEN_PIN) | (1ULL << LED1_BLUE_PIN) |
+                          (1ULL << LED2_RED_PIN) | (1ULL << LED2_GREEN_PIN) | (1ULL << LED2_BLUE_PIN);
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
@@ -265,10 +293,16 @@ static void gpio_init(void)
     io_conf.pull_up_en = 1;  // 启用内部上拉电阻
     gpio_config(&io_conf);
 
-    // 设置LED初始状态
-    gpio_set_level(LED_RED_PIN, 0);
-    gpio_set_level(LED_GREEN_PIN, 0);
-    gpio_set_level(LED_BLUE_PIN, 0);
+    // 设置LED初始状态 - 共阳极LED，高电平(1)熄灭，低电平(0)点亮
+    // LED1组初始状态 - 全部熄灭
+    gpio_set_level(LED1_RED_PIN, 1);
+    gpio_set_level(LED1_GREEN_PIN, 1);
+    gpio_set_level(LED1_BLUE_PIN, 1);
+
+    // LED2组初始状态 - 全部熄灭
+    gpio_set_level(LED2_RED_PIN, 1);
+    gpio_set_level(LED2_GREEN_PIN, 1);
+    gpio_set_level(LED2_BLUE_PIN, 1);
 }
 
 /**
