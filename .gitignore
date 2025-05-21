@@ -1,0 +1,45 @@
+# ESP-IDF 编译产生的文件
+build/
+sdkconfig
+sdkconfig.old
+
+# ESP-IDF 临时文件
+.DS_Store
+.vscode/
+.devcontainer/
+.idea/
+*.o
+*.obj
+*.elf
+*.bin
+*.map
+*.hex
+*.dis
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# 编译日志
+build_log.txt
+
+# 临时文件
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.log
+
+# 依赖文件
+managed_components/
+dependencies.lock
+
+# 其他可能的临时文件
+comports.txt
