@@ -12,9 +12,9 @@
 esp_err_t sbus_init(void);
 
 /**
- * 解析SBUS数据，映射到12个通道上
- * @param sbus_data SBUS原始数据
- * @param channel 输出的通道值数组
+ * 解析SBUS数据，按照标准SBUS协议解析16个通道
+ * @param sbus_data SBUS原始数据（25字节）
+ * @param channel 输出的通道值数组（16个通道，每个通道0-2047）
  * @return 0=成功
  */
 uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel);

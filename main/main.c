@@ -44,9 +44,9 @@ static void brake_timer_left_callback(TimerHandle_t xTimer)
     if (bk_flag_left == 0) {
         // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Left brake applied");
-        // 红色LED亮起表示刹车（共阳极LED，低电平点亮）
-        gpio_set_level(LED1_RED_PIN, 0);
-        gpio_set_level(LED2_RED_PIN, 0);
+        // 注销LED指示 - 红色LED亮起表示刹车（共阳极LED，低电平点亮）
+        // gpio_set_level(LED1_RED_PIN, 0);
+        // gpio_set_level(LED2_RED_PIN, 0);
     }
 }
 
@@ -58,9 +58,9 @@ static void brake_timer_right_callback(TimerHandle_t xTimer)
     if (bk_flag_right == 0) {
         // 通过CAN总线发送刹车命令
         ESP_LOGI(TAG, "Right brake applied");
-        // 红色LED亮起表示刹车（共阳极LED，低电平点亮）
-        gpio_set_level(LED1_RED_PIN, 0);
-        gpio_set_level(LED2_RED_PIN, 0);
+        // 注销LED指示 - 红色LED亮起表示刹车（共阳极LED，低电平点亮）
+        // gpio_set_level(LED1_RED_PIN, 0);
+        // gpio_set_level(LED2_RED_PIN, 0);
     }
 }
 
@@ -74,7 +74,7 @@ static void sbus_process_task(void *pvParameters)
     uint16_t ch_val[LEN_CHANEL] = {0};
     sbus_data_t sbus_data;
 
-    ESP_LOGI(TAG, "SBUS处理任务已启动");
+    // SBUS处理任务已启动
 
     while (1) {
         // 检查SBUS数据
@@ -82,22 +82,22 @@ static void sbus_process_task(void *pvParameters)
             // 解析SBUS数据
             parse_sbus_msg(sbus_raw_data, ch_val);
 
-            // 打印解析后的SBUS通道值(调试用)
-            ESP_LOGI(TAG, "SBUS Channels:");
-            for (int i = 0; i < LEN_CHANEL; i++) {
-                ESP_LOGI(TAG, "CH%d: %u", i + 1, ch_val[i]);
-            }
+            // SBUS通道值已在parse_sbus_msg函数中打印，此处不重复打印
 
             // 复制通道值到队列数据结构
             memcpy(sbus_data.channel, ch_val, sizeof(ch_val));
 
-            // 发送到队列
+            // 发送到队列，如果队列满则覆盖旧数据
             if (xQueueSend(sbus_queue, &sbus_data, 0) != pdPASS) {
-                ESP_LOGW(TAG, "SBUS队列已满");
+                // 队列满时，先取出一个旧数据，再放入新数据
+                sbus_data_t dummy;
+                xQueueReceive(sbus_queue, &dummy, 0);
+                xQueueSend(sbus_queue, &sbus_data, 0);
+                // SBUS队列已满，覆盖旧数据
             }
         }
 
-        // 短暂延时，避免过度占用CPU
+        // 短暂延时，避免过度占用CPU（平衡性能和稳定性）
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -183,10 +183,10 @@ static void motor_control_task(void *pvParameters)
             cmd_timeout = xTaskGetTickCount() + pdMS_TO_TICKS(1000); // 1秒超时
             sbus_control = false;
 
-            // 接收到CMD_VEL命令时，两组LED的绿色闪烁
+            // 注销LED指示 - 接收到CMD_VEL命令时，两组LED的绿色闪烁
             // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
-            gpio_set_level(LED1_GREEN_PIN, !gpio_get_level(LED1_GREEN_PIN));
-            gpio_set_level(LED2_GREEN_PIN, !gpio_get_level(LED2_GREEN_PIN));
+            // gpio_set_level(LED1_GREEN_PIN, !gpio_get_level(LED1_GREEN_PIN));
+            // gpio_set_level(LED2_GREEN_PIN, !gpio_get_level(LED2_GREEN_PIN));
         }
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
@@ -195,30 +195,30 @@ static void motor_control_task(void *pvParameters)
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
 
-                // 接收到SBUS命令时，两组LED的蓝色闪烁
+                // 注销LED指示 - 接收到SBUS命令时，两组LED的蓝色闪烁
                 // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
-                gpio_set_level(LED1_BLUE_PIN, !gpio_get_level(LED1_BLUE_PIN));
-                gpio_set_level(LED2_BLUE_PIN, !gpio_get_level(LED2_BLUE_PIN));
+                // gpio_set_level(LED1_BLUE_PIN, !gpio_get_level(LED1_BLUE_PIN));
+                // gpio_set_level(LED2_BLUE_PIN, !gpio_get_level(LED2_BLUE_PIN));
             }
         }
 
-        // 短暂延时，避免过度占用CPU
-        vTaskDelay(pdMS_TO_TICKS(20));
+        // 短暂延时，避免过度占用CPU（平衡性能和稳定性）
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 /**
  * 状态监控任务
- * 监控系统状态并更新LED指示
+ * 监控系统状态（LED显示功能已注销）
  */
 static void status_monitor_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "状态监控任务已启动");
-    uint8_t led_state = 0;
+    ESP_LOGI(TAG, "状态监控任务已启动 (LED显示已注销)");
 
     while (1) {
-        // 循环显示不同颜色，表示系统正常运行
+        // 注销LED循环显示功能 - 原本循环显示不同颜色，表示系统正常运行
         // 注意：共阳极LED，低电平(0)点亮，高电平(1)熄灭
+        /*
         switch (led_state) {
             case 0: // 红色
                 // LED1组
@@ -264,6 +264,11 @@ static void status_monitor_task(void *pvParameters)
 
         // 更新状态
         led_state = (led_state + 1) % 4;
+        */
+
+        // 系统状态监控任务保持运行，但不进行LED显示
+        // 可以在此处添加其他系统状态监控逻辑
+        ESP_LOGD(TAG, "系统状态监控中...");
 
         // 延时500ms
         vTaskDelay(pdMS_TO_TICKS(500));

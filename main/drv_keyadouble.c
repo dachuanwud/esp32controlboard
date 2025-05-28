@@ -26,6 +26,7 @@ uint8_t bk_flag_right = 0;
 
 // TWAI (CAN) 配置 - 根据电路图SN65HVD232D CAN收发电路
 // IO16连接到SN65HVD232D的D引脚(TX)，IO17连接到R引脚(RX)
+// 使用标准模式，但发送时不等待ACK应答
 static const twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_16, GPIO_NUM_17, TWAI_MODE_NORMAL);
 static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
 static const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
@@ -48,9 +49,19 @@ static void keya_send_data(uint32_t id, uint8_t* data)
         message.data[i] = data[i];
     }
 
-    // 发送消息
-    if (twai_transmit(&message, pdMS_TO_TICKS(100)) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send CAN message");
+    // 发送消息 - 不等待ACK，立即发送
+    esp_err_t result = twai_transmit(&message, 0);  // 超时设为0，不等待
+    if (result != ESP_OK) {
+        ESP_LOGD(TAG, "CAN send result: %s", esp_err_to_name(result));
+
+        // 只在严重错误时打印状态
+        if (result != ESP_ERR_TIMEOUT) {
+            twai_status_info_t status_info;
+            if (twai_get_status_info(&status_info) == ESP_OK) {
+                ESP_LOGW(TAG, "CAN Status - State: %lu, TX Error: %lu, RX Error: %lu",
+                         (unsigned long)status_info.state, (unsigned long)status_info.tx_error_counter, (unsigned long)status_info.rx_error_counter);
+            }
+        }
     }
 
     // 打印发送的CAN数据(调试用)
