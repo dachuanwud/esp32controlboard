@@ -1,0 +1,27 @@
+# ESP32控制板 16MB Flash 分区表配置
+# Name,     Type, SubType, Offset,   Size,     Flags
+# 注意：如果您增加了引导程序大小，请确保更新偏移量以避免重叠
+
+# NVS存储 - 用于Wi-Fi配置、系统设置等
+nvs,        data, nvs,     0x9000,   0x6000,
+
+# OTA数据分区 - 存储OTA状态信息
+otadata,    data, ota,     0xf000,   0x2000,
+
+# PHY初始化数据
+phy_init,   data, phy,     0x11000,  0x1000,
+
+# 主应用程序分区 (factory) - 2MB
+factory,    app,  factory, 0x20000,  0x200000,
+
+# OTA分区0 - 2MB (用于OTA更新)
+ota_0,      app,  ota_0,   0x220000, 0x200000,
+
+# OTA分区1 - 2MB (用于OTA更新)
+ota_1,      app,  ota_1,   0x420000, 0x200000,
+
+# SPIFFS文件系统 - 7MB (用于Web文件、日志等)
+spiffs,     data, spiffs,  0x620000, 0x700000,
+
+# 用户数据存储 - 1MB (预留给用户数据)
+userdata,   data, 0x40,    0xd20000, 0x100000,

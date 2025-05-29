@@ -2,6 +2,11 @@
 #include "channel_parse.h"
 #include "drv_keyadouble.h"
 #include "sbus.h"
+#include "wifi_manager.h"
+#include "http_server.h"
+#include "ota_manager.h"
+#include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "MAIN";
 
@@ -21,6 +26,13 @@ static TaskHandle_t sbus_task_handle = NULL;
 static TaskHandle_t cmd_task_handle = NULL;
 static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t status_task_handle = NULL;
+static TaskHandle_t wifi_task_handle = NULL;
+static TaskHandle_t http_task_handle = NULL;
+
+// Wi-Fi配置 - 可以通过Web界面或硬编码配置
+#define DEFAULT_WIFI_SSID     "WangCun"
+#define DEFAULT_WIFI_PASSWORD "allen2008"
+#define WIFI_CONNECT_TIMEOUT  30000  // 30秒超时
 
 // FreeRTOS队列句柄
 static QueueHandle_t sbus_queue = NULL;
@@ -35,6 +47,49 @@ typedef struct {
     int8_t speed_left;
     int8_t speed_right;
 } motor_cmd_t;
+
+// 全局状态变量（用于Web接口）
+static uint16_t g_last_sbus_channels[16] = {0};
+static int8_t g_last_motor_left = 0;
+static int8_t g_last_motor_right = 0;
+static uint32_t g_last_sbus_update = 0;
+static uint32_t g_last_motor_update = 0;
+
+/**
+ * 获取SBUS状态回调函数
+ * 用于HTTP服务器获取当前SBUS状态
+ */
+static bool get_sbus_status(uint16_t* channels)
+{
+    if (channels == NULL) {
+        return false;
+    }
+
+    // 复制最新的SBUS通道值
+    memcpy(channels, g_last_sbus_channels, sizeof(g_last_sbus_channels));
+
+    // 检查数据是否新鲜（5秒内更新过）
+    uint32_t current_time = xTaskGetTickCount();
+    return (current_time - g_last_sbus_update) < pdMS_TO_TICKS(5000);
+}
+
+/**
+ * 获取电机状态回调函数
+ * 用于HTTP服务器获取当前电机状态
+ */
+static bool get_motor_status(int8_t* left, int8_t* right)
+{
+    if (left == NULL || right == NULL) {
+        return false;
+    }
+
+    *left = g_last_motor_left;
+    *right = g_last_motor_right;
+
+    // 检查数据是否新鲜（5秒内更新过）
+    uint32_t current_time = xTaskGetTickCount();
+    return (current_time - g_last_motor_update) < pdMS_TO_TICKS(5000);
+}
 
 /**
  * 左刹车定时器回调函数
@@ -83,6 +138,10 @@ static void sbus_process_task(void *pvParameters)
             parse_sbus_msg(sbus_raw_data, ch_val);
 
             // SBUS通道值已在parse_sbus_msg函数中打印，此处不重复打印
+
+            // 保存SBUS状态用于Web接口
+            memcpy(g_last_sbus_channels, ch_val, sizeof(ch_val));
+            g_last_sbus_update = xTaskGetTickCount();
 
             // 复制通道值到队列数据结构
             memcpy(sbus_data.channel, ch_val, sizeof(ch_val));
@@ -183,6 +242,11 @@ static void motor_control_task(void *pvParameters)
             cmd_timeout = xTaskGetTickCount() + pdMS_TO_TICKS(1000); // 1秒超时
             sbus_control = false;
 
+            // 保存电机状态用于Web接口
+            g_last_motor_left = motor_cmd.speed_left;
+            g_last_motor_right = motor_cmd.speed_right;
+            g_last_motor_update = xTaskGetTickCount();
+
             // 注销LED指示 - 接收到CMD_VEL命令时，两组LED的绿色闪烁
             // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
             // gpio_set_level(LED1_GREEN_PIN, !gpio_get_level(LED1_GREEN_PIN));
@@ -204,6 +268,83 @@ static void motor_control_task(void *pvParameters)
 
         // 短暂延时，避免过度占用CPU（平衡性能和稳定性）
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * Wi-Fi管理任务
+ * 管理Wi-Fi连接和重连逻辑
+ */
+static void wifi_management_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "📡 Wi-Fi管理任务已启动");
+
+    // 初始化Wi-Fi管理器
+    if (wifi_manager_init() != ESP_OK) {
+        ESP_LOGE(TAG, "❌ Failed to initialize Wi-Fi manager");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 尝试连接到默认Wi-Fi网络
+    ESP_LOGI(TAG, "🔗 Attempting to connect to Wi-Fi: %s", DEFAULT_WIFI_SSID);
+    esp_err_t ret = wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ Connected to Wi-Fi: %s", DEFAULT_WIFI_SSID);
+        ESP_LOGI(TAG, "📍 IP Address: %s", wifi_manager_get_ip_address());
+
+        // 启动HTTP服务器
+        if (http_server_start() == ESP_OK) {
+            ESP_LOGI(TAG, "🌐 HTTP Server started successfully");
+            ESP_LOGI(TAG, "🔗 Web interface available at: http://%s", wifi_manager_get_ip_address());
+        } else {
+            ESP_LOGE(TAG, "❌ Failed to start HTTP server");
+        }
+    } else {
+        ESP_LOGW(TAG, "⚠️ Failed to connect to Wi-Fi, will retry periodically");
+    }
+
+    while (1) {
+        // 检查Wi-Fi连接状态
+        if (!wifi_manager_is_connected()) {
+            ESP_LOGW(TAG, "📡 Wi-Fi disconnected, attempting to reconnect...");
+            wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+        }
+
+        // 每30秒检查一次连接状态
+        vTaskDelay(pdMS_TO_TICKS(30000));
+    }
+}
+
+/**
+ * HTTP服务器管理任务
+ * 管理HTTP服务器状态和回调函数
+ */
+static void http_server_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "🌐 HTTP服务器管理任务已启动");
+
+    // 初始化HTTP服务器
+    if (http_server_init() != ESP_OK) {
+        ESP_LOGE(TAG, "❌ Failed to initialize HTTP server");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 设置回调函数
+    http_server_set_sbus_callback(get_sbus_status);
+    http_server_set_motor_callback(get_motor_status);
+
+    while (1) {
+        // HTTP服务器状态监控
+        if (wifi_manager_is_connected() && !http_server_is_running()) {
+            ESP_LOGI(TAG, "🔄 Restarting HTTP server...");
+            http_server_start();
+        }
+
+        // 每10秒检查一次服务器状态
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
@@ -390,6 +531,25 @@ void app_main(void)
     // 初始化定时器
     app_timer_init();
 
+    // 初始化OTA管理器
+    ota_config_t ota_config = {
+        .max_firmware_size = 1024 * 1024,  // 1MB
+        .verify_signature = false,
+        .auto_rollback = true,
+        .rollback_timeout_ms = 30000
+    };
+    if (ota_manager_init(&ota_config) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize OTA manager");
+    }
+
+    // 检查是否需要回滚
+    if (ota_manager_check_rollback_required()) {
+        ESP_LOGW(TAG, "⚠️ Firmware pending verification, will auto-rollback in 30s if not validated");
+        // 在实际应用中，这里可以启动一个定时器来自动验证固件
+        // 目前我们直接标记为有效
+        ota_manager_mark_valid();
+    }
+
     ESP_LOGI(TAG, "System initialized");
 
     // 创建FreeRTOS队列
@@ -442,5 +602,29 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create status monitor task");
     }
 
-    ESP_LOGI(TAG, "All FreeRTOS tasks created");
+    // Wi-Fi管理任务 - 中优先级
+    xReturned = xTaskCreate(
+        wifi_management_task,
+        "wifi_task",
+        4096,
+        NULL,
+        8,   // 中优先级
+        &wifi_task_handle);
+    if (xReturned != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create Wi-Fi management task");
+    }
+
+    // HTTP服务器任务 - 中优先级
+    xReturned = xTaskCreate(
+        http_server_task,
+        "http_task",
+        4096,
+        NULL,
+        7,   // 中优先级
+        &http_task_handle);
+    if (xReturned != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create HTTP server task");
+    }
+
+    ESP_LOGI(TAG, "All FreeRTOS tasks created (including Wi-Fi and HTTP server)");
 }

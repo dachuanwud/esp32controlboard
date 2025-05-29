@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -14,6 +15,9 @@
 #include "driver/twai.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_wifi.h"
+#include "esp_http_server.h"
+#include "esp_ota_ops.h"
 
 // 定义GPIO引脚
 // LED指示灯引脚 - 共阳极RGB LED
@@ -56,5 +60,7 @@
 // 外部变量声明
 extern uint8_t bk_flag_left;
 extern uint8_t bk_flag_right;
+extern uint32_t g_last_sbus_update;
+extern uint32_t g_last_motor_update;
 
 #endif /* MAIN_H */
