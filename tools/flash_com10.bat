@@ -29,7 +29,7 @@ echo.
 echo Starting flash process...
 echo ========================================
 
-"%IDF_PYTHON_ENV_PATH%\Scripts\python.exe" -m esptool --chip esp32 -p COM10 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size 2MB 0x1000 build\bootloader\bootloader.bin 0x10000 build\esp32controlboard.bin 0x8000 build\partition_table\partition-table.bin
+"%IDF_PYTHON_ENV_PATH%\Scripts\python.exe" -m esptool --chip esp32 -p COM10 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size 16MB 0x1000 build\bootloader\bootloader.bin 0x10000 build\esp32controlboard.bin 0x8000 build\partition_table\partition-table.bin
 
 echo ========================================
 
@@ -39,7 +39,7 @@ if %ERRORLEVEL% EQU 0 (
     echo ESP32 should restart and run the new program.
     echo.
     echo Start serial monitor? (y/n)
-    set /p monitor_choice=Choice: 
+    set /p monitor_choice=Choice:
     if /i "%monitor_choice%"=="y" (
         echo Starting monitor on COM10...
         "%IDF_PYTHON_ENV_PATH%\Scripts\python.exe" -m serial.tools.miniterm COM10 115200

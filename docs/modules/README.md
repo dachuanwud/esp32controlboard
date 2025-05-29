@@ -16,6 +16,9 @@
 ### 核心模块
 - **SBUS接收模块**: 遥控信号接收和解析
 - **CAN通信模块**: 电机驱动器通信
+- **Wi-Fi管理模块**: 无线网络连接和状态管理
+- **HTTP服务器模块**: RESTful API和Web界面服务
+- **OTA管理模块**: 固件无线更新和双分区管理
 - **UART调试模块**: 系统调试和日志输出
 - **GPIO控制模块**: 通用输入输出控制
 - **定时器模块**: 系统定时和计数功能
@@ -87,6 +90,101 @@ bool can_is_ready(void);
 - **RX引脚**: GPIO17
 - **波特率**: 250kbps
 - **过滤器**: 接受所有帧
+
+## 📡 Wi-Fi管理模块
+
+### 功能特性
+- **Station模式**: 连接到现有Wi-Fi网络
+- **自动重连**: 连接断开时自动重试
+- **状态监控**: 实时监控连接状态和信号强度
+- **网络扫描**: 扫描可用的Wi-Fi网络
+- **AP模式**: 提供配置热点功能
+
+### 接口定义
+```c
+// Wi-Fi初始化
+esp_err_t wifi_manager_init(void);
+
+// 连接Wi-Fi网络
+esp_err_t wifi_manager_connect(const char* ssid, const char* password);
+
+// 获取连接状态
+bool wifi_manager_is_connected(void);
+
+// 获取IP地址
+const char* wifi_manager_get_ip_address(void);
+```
+
+### 配置参数
+- **连接超时**: 30秒
+- **重试次数**: 5次
+- **信号强度**: RSSI监控
+- **IP获取**: DHCP自动分配
+
+## 🌐 HTTP服务器模块
+
+### 功能特性
+- **RESTful API**: 标准REST接口设计
+- **CORS支持**: 跨域资源共享
+- **JSON数据**: 结构化数据交换
+- **文件上传**: 支持固件文件上传
+- **状态监控**: 实时设备状态查询
+
+### 接口定义
+```c
+// HTTP服务器初始化
+esp_err_t http_server_init(void);
+
+// 启动HTTP服务器
+esp_err_t http_server_start(void);
+
+// 检查服务器状态
+bool http_server_is_running(void);
+
+// 设置回调函数
+void http_server_set_sbus_callback(sbus_status_callback_t callback);
+void http_server_set_motor_callback(motor_status_callback_t callback);
+```
+
+### API端点
+- **设备信息**: `/api/device/info`
+- **设备状态**: `/api/device/status`
+- **OTA上传**: `/api/ota/upload`
+- **OTA进度**: `/api/ota/progress`
+- **Wi-Fi配置**: `/api/wifi/connect`
+
+## 🔄 OTA管理模块
+
+### 功能特性
+- **双分区机制**: 安全的固件更新
+- **自动回滚**: 更新失败时自动恢复
+- **进度监控**: 实时更新进度反馈
+- **固件验证**: 完整性和格式检查
+- **断电保护**: 更新过程中断电保护
+
+### 接口定义
+```c
+// OTA管理器初始化
+esp_err_t ota_manager_init(const ota_config_t* config);
+
+// 开始OTA更新
+esp_err_t ota_manager_begin(uint32_t firmware_size);
+
+// 写入固件数据
+esp_err_t ota_manager_write(const void* data, size_t size);
+
+// 完成OTA更新
+esp_err_t ota_manager_end(void);
+
+// 获取更新进度
+esp_err_t ota_manager_get_progress(ota_progress_t* progress);
+```
+
+### 配置参数
+- **最大固件大小**: 1MB
+- **回滚超时**: 30秒
+- **签名验证**: 可选
+- **自动回滚**: 启用
 
 ## 🔌 UART调试模块
 
@@ -160,7 +258,7 @@ esp_err_t timer_start(timer_group_t group, timer_idx_t timer);
 esp_err_t timer_stop(timer_group_t group, timer_idx_t timer);
 
 // 定时器回调
-esp_err_t timer_set_callback(timer_group_t group, timer_idx_t timer, 
+esp_err_t timer_set_callback(timer_group_t group, timer_idx_t timer,
                             timer_isr_t callback);
 ```
 
@@ -177,6 +275,24 @@ esp_err_t timer_set_callback(timer_group_t group, timer_idx_t timer,
 - **发送延迟**: < 1ms
 - **CPU占用**: < 3%
 - **内存占用**: < 2KB
+
+### Wi-Fi管理模块
+- **连接时间**: < 10秒
+- **重连延迟**: < 5秒
+- **CPU占用**: < 8%
+- **内存占用**: < 4KB
+
+### HTTP服务器模块
+- **并发连接**: 最多4个
+- **响应时间**: < 100ms
+- **CPU占用**: < 10%
+- **内存占用**: < 8KB
+
+### OTA管理模块
+- **更新速度**: ~50KB/s
+- **验证时间**: < 2秒
+- **CPU占用**: < 15% (更新时)
+- **内存占用**: < 16KB
 
 ### UART调试模块
 - **输出速率**: 115200 bps

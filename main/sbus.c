@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include "sbus.h"
 #include "main.h"
 #include "hal/uart_types.h"  // 包含UART_INVERT_RXD定义
@@ -43,7 +44,7 @@ static void sbus_uart_task(void *pvParameters)
             uart_get_buffered_data_len(UART_SBUS, &uart_buf_len);
             if (uart_buf_len > 500) {
                 uart_flush(UART_SBUS);
-                ESP_LOGW(TAG, "⚠️ UART buffer overflow, flushed %d bytes", uart_buf_len);
+                ESP_LOGW(TAG, "⚠️ UART buffer overflow, flushed %" PRIu32 " bytes", (uint32_t)uart_buf_len);
                 g_sbus_pt = 0; // 重置SBUS解析状态
             }
         }
@@ -53,7 +54,7 @@ static void sbus_uart_task(void *pvParameters)
 
         if (xQueueReceive(sbus_uart_queue, (void *)&event, pdMS_TO_TICKS(10))) {
             last_event_time = xTaskGetTickCount();
-            ESP_LOGD(TAG, "📨 UART event received at tick: %lu", last_event_time);
+            ESP_LOGD(TAG, "📨 UART event received at tick: %" PRIu32, last_event_time);
             if (event.type == UART_DATA) {
                 // 读取所有可用的UART数据，而不是一次只读一个字节
                 uint8_t temp_buffer[64];

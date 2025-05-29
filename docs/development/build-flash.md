@@ -12,29 +12,51 @@ ESP32控制板项目使用ESP-IDF构建系统，支持CMake构建配置。项目
 
 <augment_code_snippet path="main/CMakeLists.txt" mode="EXCERPT">
 ````cmake
-idf_component_register(SRCS "main.c"
+idf_component_register(SRCS "ota_manager.c" "http_server.c" "wifi_manager.c" "main.c"
                        "channel_parse.c"
                        "drv_keyadouble.c"
                        "sbus.c"
-                    INCLUDE_DIRS ".")
+                    INCLUDE_DIRS "."
+                    REQUIRES esp_wifi esp_http_server esp_https_ota app_update nvs_flash json spi_flash driver)
 ````
 </augment_code_snippet>
 
 ### 主要源文件
 - **main.c**: 主程序入口，FreeRTOS任务管理
+- **wifi_manager.c**: Wi-Fi连接管理和状态监控
+- **http_server.c**: HTTP服务器和RESTful API实现
+- **ota_manager.c**: OTA固件更新和双分区管理
 - **sbus.c**: SBUS协议接收和解析
 - **channel_parse.c**: 通道数据解析和控制逻辑
 - **drv_keyadouble.c**: 电机驱动和CAN通信
 
 ## 🛠️ 使用批处理脚本编译
 
-### 1. 仅编译项目
+### 1. 仅编译ESP32固件
 
 使用项目提供的编译脚本：
 
 ```bash
 # 执行编译脚本
 build_only.bat
+```
+
+### 2. 编译Web前端
+
+Web OTA系统包含React前端，需要单独构建：
+
+```bash
+# 进入Web客户端目录
+cd web_client
+
+# 安装依赖
+npm install
+
+# 构建生产版本
+npm run build
+
+# 开发模式运行
+npm run dev
 ```
 
 脚本配置详情：
@@ -54,7 +76,7 @@ REM Build the project
 ````
 </augment_code_snippet>
 
-### 2. 编译成功输出
+### 3. 编译成功输出
 
 编译成功后会显示：
 
@@ -110,7 +132,7 @@ echo Baud: 460800
 | -b | 460800 | 烧录波特率 |
 | --flash_mode | dio | Flash模式 |
 | --flash_freq | 40m | Flash频率 |
-| --flash_size | 2MB | Flash大小 |
+| --flash_size | 16MB | Flash大小 |
 
 ### 4. 分区表配置
 
@@ -118,7 +140,8 @@ echo Baud: 460800
 |------|------|------|
 | 0x1000 | bootloader.bin | 引导程序 |
 | 0x8000 | partition-table.bin | 分区表 |
-| 0x10000 | esp32controlboard.bin | 主应用程序 |
+| 0xf000 | ota_data_initial.bin | OTA数据分区 |
+| 0x20000 | esp32controlboard.bin | 主应用程序 (OTA_0) |
 
 ## 🔍 手动编译烧录
 
@@ -143,7 +166,7 @@ idf.py menuconfig
 ### 3. 重要配置项
 
 #### Serial flasher config
-- **Flash size**: 4MB
+- **Flash size**: 16MB
 - **Flash frequency**: 40MHz
 - **Flash mode**: DIO
 
@@ -224,12 +247,12 @@ I (xxx) DRV_KEYADOUBLE: Motor driver initialized
 static void status_monitor_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "状态监控任务已启动 (LED显示已注销)");
-    
+
     while (1) {
         // 每2秒输出一次系统状态
-        ESP_LOGI(TAG, "💓 System heartbeat - Free heap: %d bytes", 
+        ESP_LOGI(TAG, "💓 System heartbeat - Free heap: %d bytes",
                  esp_get_free_heap_size());
-        
+
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }

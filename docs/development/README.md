@@ -128,8 +128,8 @@ idf.py menuconfig
 ```
 
 ### 重要配置项
-- **Flash size**: 4MB
-- **Partition table**: Single factory app
+- **Flash size**: 16MB
+- **Partition table**: Custom OTA partitions (16MB optimized)
 - **CPU frequency**: 240MHz
 - **FreeRTOS tick rate**: 1000Hz
 - **Main task stack size**: 4096
@@ -175,7 +175,7 @@ const char* MODULE_TAG = "MODULE";
 ```c
 /**
  * @brief 函数简要描述
- * 
+ *
  * @param param1 参数1描述
  * @param param2 参数2描述
  * @return esp_err_t 返回值描述

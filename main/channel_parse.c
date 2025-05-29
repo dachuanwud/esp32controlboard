@@ -4,6 +4,7 @@
 #include "channel_parse.h"
 #include "drv_keyadouble.h"
 #include "esp_log.h"
+#include <inttypes.h>
 
 static const char *TAG = "CHAN_PARSE";
 
@@ -124,7 +125,7 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         if (ch_val[6] == 1950) {
             // 启动单手模式，仅用左边拨杆控制
             sp_lr = chg_val(ch_val[3]); // 左右分量，向右>0
-            ESP_LOGI(TAG, "�️ Single-hand mode activated");
+            ESP_LOGI(TAG, "🤟 Single-hand mode activated");
         }
 
         if (ch_val[7] == 1950) {

@@ -2,6 +2,7 @@
 #include <string.h>
 #include "drv_keyadouble.h"
 #include "main.h"
+#include <inttypes.h>
 
 static const char *TAG = "DRV_KEYA";
 
@@ -58,7 +59,7 @@ static void keya_send_data(uint32_t id, uint8_t* data)
         if (result != ESP_ERR_TIMEOUT) {
             twai_status_info_t status_info;
             if (twai_get_status_info(&status_info) == ESP_OK) {
-                ESP_LOGW(TAG, "CAN Status - State: %lu, TX Error: %lu, RX Error: %lu",
+                ESP_LOGW(TAG, "CAN Status - State: %" PRIu32 ", TX Error: %" PRIu32 ", RX Error: %" PRIu32,
                          (unsigned long)status_info.state, (unsigned long)status_info.tx_error_counter, (unsigned long)status_info.rx_error_counter);
             }
         }
@@ -66,7 +67,7 @@ static void keya_send_data(uint32_t id, uint8_t* data)
 
     // 打印发送的CAN数据(调试用)
     char buffer[100];
-    sprintf(buffer, "CAN:%08lX:", id);
+    sprintf(buffer, "CAN:%08" PRIX32 ":", id);
     printf("%s", buffer);
     for (int i = 0; i < 8; i++) {
         sprintf(buffer, "%02X ", data[i]);
