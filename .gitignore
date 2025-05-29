@@ -43,3 +43,111 @@ dependencies.lock
 
 # 其他可能的临时文件
 comports.txt
+
+# ===========================================
+# Web Client 前端项目忽略文件
+# ===========================================
+
+# Node.js 依赖包
+web_client/node_modules/
+node_modules/
+
+# 前端构建产物
+web_client/dist/
+web_client/build/
+
+# 前端开发工具缓存
+web_client/.vite/
+.vite/
+web_client/.cache/
+web_client/.parcel-cache/
+
+# 前端环境配置
+web_client/.env
+web_client/.env.local
+web_client/.env.development.local
+web_client/.env.test.local
+web_client/.env.production.local
+
+# 前端日志文件
+web_client/npm-debug.log*
+web_client/yarn-debug.log*
+web_client/yarn-error.log*
+web_client/pnpm-debug.log*
+
+# ===========================================
+# 开发工具和IDE配置
+# ===========================================
+
+# Cursor AI IDE
+.cursor/
+
+# Visual Studio Code
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+.vscode/tasks.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# ===========================================
+# 操作系统生成的文件
+# ===========================================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Linux
+*~
+.nfs*
+
+# ===========================================
+# 备份和临时文件
+# ===========================================
+
+# 备份文件
+*.bak
+*.backup
+*.old
+*.orig
+
+# 临时文件
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# 压缩文件（通常不需要版本控制）
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ===========================================
+# 项目特定忽略文件
+# ===========================================
+
+# ESP32 固件文件（如果不需要版本控制）
+# *.bin
+# *.elf
+
+# 测试覆盖率报告
+coverage/
+*.lcov
+
+# 性能分析文件
+*.prof
