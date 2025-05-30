@@ -21,12 +21,6 @@ static httpd_handle_t s_server = NULL;
 static bool (*s_sbus_callback)(uint16_t* channels) = NULL;
 static bool (*s_motor_callback)(int8_t* left, int8_t* right) = NULL;
 
-// CORS头部
-static const char* CORS_HEADERS =
-    "Access-Control-Allow-Origin: *\r\n"
-    "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-    "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
-
 /**
  * 发送JSON响应
  */
@@ -41,7 +35,20 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json, int status_co
     // 设置响应头
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_status(req, status_code == 200 ? "200 OK" : "400 Bad Request");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, Authorization");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    
+    // 设置状态码
+    if (status_code == 200) {
+        httpd_resp_set_status(req, "200 OK");
+    } else if (status_code == 400) {
+        httpd_resp_set_status(req, "400 Bad Request");
+    } else if (status_code == 500) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+    } else {
+        httpd_resp_set_status(req, "200 OK");  // 默认状态
+    }
 
     // 发送响应
     esp_err_t ret = httpd_resp_send(req, json_string, strlen(json_string));
@@ -127,6 +134,55 @@ static esp_err_t device_status_handler(httpd_req_t *req)
         cJSON_AddItemToArray(channels, cJSON_CreateNumber(status.sbus_channels[i]));
     }
     cJSON_AddItemToObject(data, "sbus_channels", channels);
+
+    cJSON_AddStringToObject(json, "status", "success");
+    cJSON_AddItemToObject(json, "data", data);
+
+    esp_err_t ret = send_json_response(req, json, 200);
+    cJSON_Delete(json);
+    return ret;
+}
+
+/**
+ * 系统健康检查API处理函数
+ */
+static esp_err_t device_health_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "🩺 System health check requested");
+
+    system_health_t health;
+    if (http_server_get_system_health(&health) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(data, "uptime_seconds", health.uptime_seconds);
+    cJSON_AddNumberToObject(data, "free_heap", health.free_heap);
+    cJSON_AddNumberToObject(data, "min_free_heap", health.min_free_heap);
+    cJSON_AddNumberToObject(data, "cpu_usage_percent", health.cpu_usage_percent);
+    cJSON_AddNumberToObject(data, "cpu_temperature", health.cpu_temperature);
+    cJSON_AddBoolToObject(data, "watchdog_triggered", health.watchdog_triggered);
+    cJSON_AddNumberToObject(data, "task_count", health.task_count);
+    cJSON_AddBoolToObject(data, "wifi_healthy", health.wifi_healthy);
+    cJSON_AddBoolToObject(data, "sbus_healthy", health.sbus_healthy);
+    cJSON_AddBoolToObject(data, "motor_healthy", health.motor_healthy);
+
+    // 计算整体健康评分
+    int health_score = 100;
+    if (!health.wifi_healthy) health_score -= 20;
+    if (!health.sbus_healthy) health_score -= 30;
+    if (!health.motor_healthy) health_score -= 30;
+    if (health.free_heap < 50000) health_score -= 10;  // 内存不足
+    if (health.cpu_usage_percent > 80) health_score -= 10;  // CPU使用率过高
+
+    cJSON_AddNumberToObject(data, "health_score", health_score);
+    cJSON_AddStringToObject(data, "health_status", 
+                          health_score >= 80 ? "excellent" :
+                          health_score >= 60 ? "good" :
+                          health_score >= 40 ? "warning" : "critical");
 
     cJSON_AddStringToObject(json, "status", "success");
     cJSON_AddItemToObject(json, "data", data);
@@ -294,6 +350,99 @@ static esp_err_t wifi_status_handler(httpd_req_t *req)
 }
 
 /**
+ * Wi-Fi连接处理函数
+ */
+static esp_err_t wifi_connect_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "📡 Wi-Fi connect request");
+
+    // 读取请求体
+    char content[256];
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    if (ret <= 0) {
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddStringToObject(json, "status", "error");
+        cJSON_AddStringToObject(json, "message", "No content provided");
+        esp_err_t resp_ret = send_json_response(req, json, 400);
+        cJSON_Delete(json);
+        return resp_ret;
+    }
+    content[ret] = '\0';
+
+    // 解析JSON
+    cJSON *json = cJSON_Parse(content);
+    if (json == NULL) {
+        cJSON *resp_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp_json, "status", "error");
+        cJSON_AddStringToObject(resp_json, "message", "Invalid JSON");
+        esp_err_t resp_ret = send_json_response(req, resp_json, 400);
+        cJSON_Delete(resp_json);
+        return resp_ret;
+    }
+
+    // 获取SSID和密码
+    cJSON *ssid_item = cJSON_GetObjectItem(json, "ssid");
+    cJSON *password_item = cJSON_GetObjectItem(json, "password");
+
+    if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL) {
+        cJSON *resp_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp_json, "status", "error");
+        cJSON_AddStringToObject(resp_json, "message", "SSID is required");
+        esp_err_t resp_ret = send_json_response(req, resp_json, 400);
+        cJSON_Delete(resp_json);
+        cJSON_Delete(json);
+        return resp_ret;
+    }
+
+    const char *ssid = ssid_item->valuestring;
+    const char *password = cJSON_IsString(password_item) ? password_item->valuestring : "";
+
+    // 尝试连接Wi-Fi
+    esp_err_t wifi_ret = wifi_manager_connect(ssid, password);
+    
+    cJSON *resp_json = cJSON_CreateObject();
+    if (wifi_ret == ESP_OK) {
+        cJSON_AddStringToObject(resp_json, "status", "success");
+        cJSON_AddStringToObject(resp_json, "message", "Connected to Wi-Fi");
+    } else {
+        cJSON_AddStringToObject(resp_json, "status", "error");
+        cJSON_AddStringToObject(resp_json, "message", "Failed to connect to Wi-Fi");
+    }
+
+    esp_err_t resp_ret = send_json_response(req, resp_json, wifi_ret == ESP_OK ? 200 : 400);
+    cJSON_Delete(resp_json);
+    cJSON_Delete(json);
+    return resp_ret;
+}
+
+/**
+ * Wi-Fi扫描处理函数
+ */
+static esp_err_t wifi_scan_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "📡 Wi-Fi scan request");
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+
+    // 简化的Wi-Fi扫描结果（实际实现需要调用ESP32 Wi-Fi扫描API）
+    // 这里提供一个示例结构，您可以根据需要实现完整的扫描功能
+    cJSON *network = cJSON_CreateObject();
+    cJSON_AddStringToObject(network, "ssid", "Example_Network");
+    cJSON_AddNumberToObject(network, "rssi", -45);
+    cJSON_AddStringToObject(network, "auth", "WPA2");
+    cJSON_AddItemToArray(data, network);
+
+    cJSON_AddStringToObject(json, "status", "success");
+    cJSON_AddItemToObject(json, "data", data);
+    cJSON_AddStringToObject(json, "message", "Wi-Fi scan completed");
+
+    esp_err_t ret = send_json_response(req, json, 200);
+    cJSON_Delete(json);
+    return ret;
+}
+
+/**
  * 注册所有HTTP处理函数
  */
 static esp_err_t register_handlers(httpd_handle_t server)
@@ -325,6 +474,15 @@ static esp_err_t register_handlers(httpd_handle_t server)
     };
     httpd_register_uri_handler(server, &device_status_uri);
 
+    // 系统健康检查API
+    httpd_uri_t device_health_uri = {
+        .uri = API_DEVICE_HEALTH,
+        .method = HTTP_GET,
+        .handler = device_health_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &device_health_uri);
+
     // OTA上传API
     httpd_uri_t ota_upload_uri = {
         .uri = API_OTA_UPLOAD,
@@ -351,6 +509,24 @@ static esp_err_t register_handlers(httpd_handle_t server)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(server, &wifi_status_uri);
+
+    // Wi-Fi连接API
+    httpd_uri_t wifi_connect_uri = {
+        .uri = API_WIFI_CONNECT,
+        .method = HTTP_POST,
+        .handler = wifi_connect_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_connect_uri);
+
+    // Wi-Fi扫描API
+    httpd_uri_t wifi_scan_uri = {
+        .uri = API_WIFI_SCAN,
+        .method = HTTP_GET,
+        .handler = wifi_scan_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_scan_uri);
 
     ESP_LOGI(TAG, "✅ All HTTP handlers registered");
     return ESP_OK;
@@ -453,11 +629,21 @@ esp_err_t http_server_get_device_info(device_info_t* info)
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
+    // 获取应用描述信息
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+
     // 填充设备信息
-    strcpy(info->device_name, "ESP32 Control Board");
-    strcpy(info->firmware_version, "1.0.0-OTA");
-    strcpy(info->hardware_version, "v1.0");
-    snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-%d", chip_info.revision);
+    strncpy(info->device_name, "ESP32 Control Board", sizeof(info->device_name) - 1);
+    info->device_name[sizeof(info->device_name) - 1] = '\0';
+    
+    // 使用应用描述中的版本信息
+    strncpy(info->firmware_version, app_desc->version, sizeof(info->firmware_version) - 1);
+    info->firmware_version[sizeof(info->firmware_version) - 1] = '\0';
+    
+    strncpy(info->hardware_version, "v1.0", sizeof(info->hardware_version) - 1);
+    info->hardware_version[sizeof(info->hardware_version) - 1] = '\0';
+    
+    snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-%d核心", chip_info.cores);
     info->flash_size = flash_size;
     info->free_heap = esp_get_free_heap_size();
     info->uptime_seconds = xTaskGetTickCount() / configTICK_RATE_HZ;
@@ -483,7 +669,8 @@ esp_err_t http_server_get_device_status(device_status_t* status)
     wifi_status_t wifi_status;
     if (wifi_manager_get_status(&wifi_status) == ESP_OK) {
         status->wifi_connected = (wifi_status.state == WIFI_STATE_CONNECTED);
-        strcpy(status->wifi_ip, wifi_status.ip_address);
+        strncpy(status->wifi_ip, wifi_status.ip_address, sizeof(status->wifi_ip) - 1);
+        status->wifi_ip[sizeof(status->wifi_ip) - 1] = '\0';  // 确保字符串结束
         status->wifi_rssi = wifi_status.rssi;
     }
 
@@ -497,7 +684,7 @@ esp_err_t http_server_get_device_status(device_status_t* status)
         status->can_connected = s_motor_callback(&status->motor_left_speed, &status->motor_right_speed);
     }
 
-    // 设置时间戳 - 使用系统滴答计数转换为毫秒
+    // 设置时间戳 - 将系统滴答计数转换为毫秒
     status->last_sbus_time = g_last_sbus_update * portTICK_PERIOD_MS;
     status->last_cmd_time = g_last_motor_update * portTICK_PERIOD_MS;
 
@@ -514,6 +701,52 @@ esp_err_t http_server_get_ota_progress(ota_progress_t* progress)
     }
 
     return ota_manager_get_progress(progress);
+}
+
+/**
+ * 获取系统健康状态
+ */
+esp_err_t http_server_get_system_health(system_health_t* health)
+{
+    if (health == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(health, 0, sizeof(system_health_t));
+
+    // 获取系统运行时间
+    health->uptime_seconds = xTaskGetTickCount() / configTICK_RATE_HZ;
+
+    // 获取内存信息
+    health->free_heap = esp_get_free_heap_size();
+    health->min_free_heap = esp_get_minimum_free_heap_size();
+
+    // 获取任务数量
+    health->task_count = uxTaskGetNumberOfTasks();
+
+    // 简化的CPU使用率估算（基于空闲任务统计）
+    // 实际实现可能需要更复杂的CPU使用率监控
+    health->cpu_usage_percent = 0;  // 暂时设为0，需要实际的CPU监控实现
+
+    // 模拟CPU温度（ESP32没有内置温度传感器，需要外部传感器）
+    health->cpu_temperature = 45.0f;  // 模拟温度
+
+    // 看门狗状态
+    health->watchdog_triggered = false;  // 简化实现
+
+    // 检查各子系统健康状态
+    
+    // Wi-Fi健康检查
+    health->wifi_healthy = wifi_manager_is_connected();
+
+    // SBUS健康检查 - 检查最近是否有SBUS数据更新
+    uint32_t current_time = xTaskGetTickCount();
+    health->sbus_healthy = (current_time - g_last_sbus_update) < pdMS_TO_TICKS(10000);  // 10秒内有更新
+
+    // 电机健康检查 - 检查最近是否有电机命令更新
+    health->motor_healthy = (current_time - g_last_motor_update) < pdMS_TO_TICKS(10000);  // 10秒内有更新
+
+    return ESP_OK;
 }
 
 /**

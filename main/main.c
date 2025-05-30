@@ -49,11 +49,11 @@ typedef struct {
 } motor_cmd_t;
 
 // 全局状态变量（用于Web接口）
-static uint16_t g_last_sbus_channels[16] = {0};
-static int8_t g_last_motor_left = 0;
-static int8_t g_last_motor_right = 0;
-static uint32_t g_last_sbus_update = 0;
-static uint32_t g_last_motor_update = 0;
+uint16_t g_last_sbus_channels[16] = {0};
+int8_t g_last_motor_left = 0;
+int8_t g_last_motor_right = 0;
+uint32_t g_last_sbus_update = 0;
+uint32_t g_last_motor_update = 0;
 
 /**
  * 获取SBUS状态回调函数

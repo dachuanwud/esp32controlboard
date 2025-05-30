@@ -15,6 +15,7 @@
 // API端点定义
 #define API_DEVICE_INFO         "/api/device/info"
 #define API_DEVICE_STATUS       "/api/device/status"
+#define API_DEVICE_HEALTH       "/api/device/health"
 #define API_OTA_UPLOAD          "/api/ota/upload"
 #define API_OTA_START           "/api/ota/start"
 #define API_OTA_PROGRESS        "/api/ota/progress"
@@ -48,6 +49,20 @@ typedef struct {
     uint32_t last_sbus_time;
     uint32_t last_cmd_time;
 } device_status_t;
+
+// 系统健康检查结构体
+typedef struct {
+    uint32_t uptime_seconds;
+    uint32_t free_heap;
+    uint32_t min_free_heap;
+    uint8_t cpu_usage_percent;
+    float cpu_temperature;
+    bool watchdog_triggered;
+    uint32_t task_count;
+    bool wifi_healthy;
+    bool sbus_healthy;
+    bool motor_healthy;
+} system_health_t;
 
 // OTA进度结构体
 typedef struct {
@@ -97,6 +112,13 @@ esp_err_t http_server_get_device_info(device_info_t* info);
  * @return ESP_OK=成功
  */
 esp_err_t http_server_get_device_status(device_status_t* status);
+
+/**
+ * 获取系统健康状态
+ * @param health 输出系统健康状态
+ * @return ESP_OK=成功
+ */
+esp_err_t http_server_get_system_health(system_health_t* health);
 
 /**
  * 获取OTA进度

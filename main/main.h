@@ -60,7 +60,12 @@
 // 外部变量声明
 extern uint8_t bk_flag_left;
 extern uint8_t bk_flag_right;
+
+// 全局状态变量声明（供HTTP服务器使用）
 extern uint32_t g_last_sbus_update;
 extern uint32_t g_last_motor_update;
+extern uint16_t g_last_sbus_channels[16];
+extern int8_t g_last_motor_left;
+extern int8_t g_last_motor_right;
 
 #endif /* MAIN_H */
