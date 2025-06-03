@@ -4,6 +4,14 @@
 
 ## 📋 文档列表
 
+### 🏗️ 整体系统架构
+- **system-architecture.md** - ESP32控制板整体软件架构设计
+  - 系统架构层次和模块组织
+  - FreeRTOS任务调度和优先级设计
+  - 模块间交互关系和数据流
+  - Web OTA系统集成架构
+  - 系统初始化流程和启动顺序
+
 ### 🔄 FreeRTOS架构设计
 - **freertos-queue-mechanism.md** - FreeRTOS队列机制详解
   - 队列架构设计和数据结构
