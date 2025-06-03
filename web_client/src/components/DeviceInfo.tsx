@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { Card, Row, Col, Badge, Spinner, Alert, Button, ProgressBar } from 'react-bootstrap'
-import { deviceAPI, DeviceInfo as DeviceInfoType, deviceManagementAPI } from '../services/api'
+import { Card, Badge, Spinner, Alert, Button, ProgressBar } from 'react-bootstrap'
+import { DeviceInfo as DeviceInfoType, deviceManagementAPI } from '../services/api'
 import { useDeviceAPI } from '../contexts/DeviceContext'
 
 const DeviceInfo: React.FC = () => {
@@ -8,6 +8,11 @@ const DeviceInfo: React.FC = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  
+  // 运行时间相关状态
+  const [currentUptime, setCurrentUptime] = useState<number>(0)
+  const [lastSyncTime, setLastSyncTime] = useState<number>(0)
+  const [uptimeTimerActive, setUptimeTimerActive] = useState(false)
 
   const { selectedDevice, apiInstance, isConnected } = useDeviceAPI()
 
@@ -29,24 +34,74 @@ const DeviceInfo: React.FC = () => {
       // 使用设备管理API获取信息
       const info = await deviceManagementAPI.getDeviceInfo(selectedDevice.ip)
       setDeviceInfo(info)
+      
+      // 更新运行时间基准
+      setCurrentUptime(info.uptime_seconds)
+      setLastSyncTime(Date.now())
+      setUptimeTimerActive(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取设备信息失败')
+      setUptimeTimerActive(false)
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
   }
 
+  // 运行时间实时更新定时器
+  useEffect(() => {
+    let uptimeInterval: ReturnType<typeof setInterval> | null = null
+
+    if (uptimeTimerActive && deviceInfo) {
+      // 每秒更新运行时间显示
+      uptimeInterval = setInterval(() => {
+        const elapsedSeconds = Math.floor((Date.now() - lastSyncTime) / 1000)
+        setCurrentUptime(deviceInfo.uptime_seconds + elapsedSeconds)
+      }, 1000)
+    }
+
+    return () => {
+      if (uptimeInterval) {
+        clearInterval(uptimeInterval)
+      }
+    }
+  }, [uptimeTimerActive, deviceInfo, lastSyncTime])
+
+  // 定期同步运行时间（每5分钟）
+  useEffect(() => {
+    let syncInterval: ReturnType<typeof setInterval> | null = null
+
+    if (selectedDevice && isConnected && deviceInfo) {
+      syncInterval = setInterval(async () => {
+        try {
+          // 使用轻量级运行时间API进行同步，减少数据传输
+          const uptimeData = await deviceManagementAPI.getDeviceUptime(selectedDevice.ip)
+          setCurrentUptime(uptimeData.uptime_seconds)
+          setLastSyncTime(Date.now())
+        } catch (err) {
+          console.warn('运行时间同步失败:', err)
+        }
+      }, 300000) // 5分钟同步一次
+    }
+
+    return () => {
+      if (syncInterval) {
+        clearInterval(syncInterval)
+      }
+    }
+  }, [selectedDevice, isConnected, deviceInfo])
+
   useEffect(() => {
     if (selectedDevice && isConnected) {
       fetchDeviceInfo()
-      // 每30秒刷新一次设备信息
+      // 每30秒刷新一次设备信息（不包括运行时间）
       const interval = setInterval(() => fetchDeviceInfo(), 30000)
       return () => clearInterval(interval)
     } else {
       setDeviceInfo(null)
       setLoading(false)
       setError(selectedDevice ? '设备未连接' : '未选择设备')
+      setUptimeTimerActive(false)
     }
   }, [selectedDevice, isConnected])
 
@@ -221,7 +276,18 @@ const DeviceInfo: React.FC = () => {
               <div className="data-value">
                 <div className="d-flex align-items-center">
                   <span className="me-2">⏱️</span>
-                  {formatUptime(deviceInfo.uptime_seconds)}
+                  {formatUptime(currentUptime)}
+                  {uptimeTimerActive && (
+                    <span className="ms-2">
+                      <span 
+                        className="badge bg-success badge-custom" 
+                        style={{ fontSize: '0.75rem' }}
+                        title="运行时间实时更新中"
+                      >
+                        实时
+                      </span>
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

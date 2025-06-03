@@ -75,6 +75,11 @@ export interface DeviceInfo {
   mac_address: string
 }
 
+export interface DeviceUptime {
+  uptime_seconds: number
+  timestamp: number
+}
+
 export interface DeviceStatus {
   sbus_connected: boolean
   can_connected: boolean
@@ -298,6 +303,16 @@ export const deviceManagementAPI = {
       return response.data.data
     }
     throw new Error(response.data.message || 'Failed to get device status')
+  },
+
+  // 获取指定设备的运行时间（轻量级API）
+  getDeviceUptime: async (ip: string): Promise<DeviceUptime> => {
+    const deviceApi = createApiInstance(ip)
+    const response = await deviceApi.get<APIResponse<DeviceUptime>>('/device/uptime')
+    if (response.data.status === 'success' && response.data.data) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to get device uptime')
   },
 }
 
