@@ -1,5 +1,7 @@
 # ESP32 控制板
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dachuanwud/esp32controlboard)
+
 ![ESP32 控制板](https://www.espressif.com/sites/default/files/product_images/esp32_2.png)
 
 ## 项目概述
