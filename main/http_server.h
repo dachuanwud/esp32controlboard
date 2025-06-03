@@ -16,6 +16,7 @@
 #define API_DEVICE_INFO         "/api/device/info"
 #define API_DEVICE_STATUS       "/api/device/status"
 #define API_DEVICE_HEALTH       "/api/device/health"
+#define API_DEVICE_UPTIME       "/api/device/uptime"
 #define API_OTA_UPLOAD          "/api/ota/upload"
 #define API_OTA_START           "/api/ota/start"
 #define API_OTA_PROGRESS        "/api/ota/progress"

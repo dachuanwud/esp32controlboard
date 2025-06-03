@@ -7,6 +7,7 @@
 #include "ota_manager.h"
 #include <string.h>
 #include <inttypes.h>
+#include "esp_app_desc.h"
 
 static const char *TAG = "MAIN";
 
@@ -516,6 +517,59 @@ static void app_timer_init(void)
 
 void app_main(void)
 {
+    // ====================================================================
+    // 系统启动和版本信息输出
+    // ====================================================================
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "🚀 %s", PROJECT_NAME);
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "🔧 版本调试信息:");
+    ESP_LOGI(TAG, "   VERSION_MAJOR: %d", VERSION_MAJOR);
+    ESP_LOGI(TAG, "   VERSION_MINOR: %d", VERSION_MINOR);
+    ESP_LOGI(TAG, "   VERSION_PATCH: %d", VERSION_PATCH);
+    ESP_LOGI(TAG, "   VERSION_SUFFIX: %s", VERSION_SUFFIX);
+    ESP_LOGI(TAG, "   VERSION_STRING: %s", VERSION_STRING);
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "📋 项目信息:");
+    ESP_LOGI(TAG, "   📦 项目名称: %s", PROJECT_NAME);
+    ESP_LOGI(TAG, "   📝 项目描述: %s", PROJECT_DESCRIPTION);
+    ESP_LOGI(TAG, "   👤 项目作者: %s", PROJECT_AUTHOR);
+    ESP_LOGI(TAG, "   🏢 组织机构: %s", PROJECT_ORGANIZATION);
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔢 版本信息:");
+    ESP_LOGI(TAG, "   🚀 固件版本: %s", VERSION_STRING);
+    ESP_LOGI(TAG, "   🔨 硬件版本: %s", HARDWARE_VERSION);
+    ESP_LOGI(TAG, "   📅 构建信息: %s", BUILD_INFO);
+    ESP_LOGI(TAG, "   🔢 版本数值: %d", VERSION_NUMBER);
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "⚡ 功能特性:");
+    ESP_LOGI(TAG, "   📡 OTA更新: %s", FEATURE_OTA_ENABLED ? "启用" : "禁用");
+    ESP_LOGI(TAG, "   🌐 Web服务器: %s", FEATURE_WEB_SERVER_ENABLED ? "启用" : "禁用");
+    ESP_LOGI(TAG, "   📶 Wi-Fi功能: %s", FEATURE_WIFI_ENABLED ? "启用" : "禁用");
+    ESP_LOGI(TAG, "   🎮 SBUS遥控: %s", FEATURE_SBUS_ENABLED ? "启用" : "禁用");
+    ESP_LOGI(TAG, "   🚗 CAN总线: %s", FEATURE_CAN_ENABLED ? "启用" : "禁用");
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "");
+
+    // ====================================================================
+    // 版本信息验证
+    // ====================================================================
+    ESP_LOGI(TAG, "🔍 版本信息验证:");
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    if (app_desc) {
+        ESP_LOGI(TAG, "   ESP-IDF 应用描述符版本: %s", app_desc->version);
+        ESP_LOGI(TAG, "   版本匹配检查: %s", 
+                 strcmp(VERSION_STRING, app_desc->version) == 0 ? "✅ 匹配" : "⚠️ 不匹配");
+        ESP_LOGI(TAG, "   构建日期: %s", app_desc->date);
+        ESP_LOGI(TAG, "   构建时间: %s", app_desc->time);
+    } else {
+        ESP_LOGI(TAG, "   ⚠️ 无法获取ESP-IDF应用描述符");
+    }
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "");
+
     // 初始化GPIO
     gpio_init();
 

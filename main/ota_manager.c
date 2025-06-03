@@ -4,6 +4,7 @@
 #include "esp_partition.h"
 #include "esp_image_format.h"
 #include "esp_app_format.h"
+#include "esp_app_desc.h"
 #include "esp_system.h"
 #include <string.h>
 #include <inttypes.h>
@@ -344,7 +345,7 @@ esp_err_t ota_manager_get_version(char* version_buffer, size_t buffer_size)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const esp_app_desc_t* app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t* app_desc = esp_app_get_description();
     if (app_desc == NULL) {
         return ESP_FAIL;
     }

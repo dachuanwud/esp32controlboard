@@ -19,6 +19,9 @@
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
 
+// 项目版本信息
+#include "version.h"
+
 // 定义GPIO引脚
 // LED指示灯引脚 - 共阳极RGB LED
 // LED1组

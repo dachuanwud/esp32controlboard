@@ -76,8 +76,8 @@ static esp_err_t device_info_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "📱 Device info requested");
 
-    device_info_t info;
-    if (http_server_get_device_info(&info) != ESP_OK) {
+    device_info_t device_info;
+    if (http_server_get_device_info(&device_info) != ESP_OK) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
@@ -85,14 +85,37 @@ static esp_err_t device_info_handler(httpd_req_t *req)
     cJSON *json = cJSON_CreateObject();
     cJSON *data = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(data, "device_name", info.device_name);
-    cJSON_AddStringToObject(data, "firmware_version", info.firmware_version);
-    cJSON_AddStringToObject(data, "hardware_version", info.hardware_version);
-    cJSON_AddStringToObject(data, "chip_model", info.chip_model);
-    cJSON_AddNumberToObject(data, "flash_size", info.flash_size);
-    cJSON_AddNumberToObject(data, "free_heap", info.free_heap);
-    cJSON_AddNumberToObject(data, "uptime_seconds", info.uptime_seconds);
-    cJSON_AddStringToObject(data, "mac_address", info.mac_address);
+    cJSON_AddStringToObject(data, "device_name", device_info.device_name);
+    cJSON_AddStringToObject(data, "firmware_version", device_info.firmware_version);
+    cJSON_AddStringToObject(data, "hardware_version", device_info.hardware_version);
+    cJSON_AddStringToObject(data, "chip_model", device_info.chip_model);
+    cJSON_AddNumberToObject(data, "flash_size", device_info.flash_size);
+    cJSON_AddNumberToObject(data, "free_heap", device_info.free_heap);
+    cJSON_AddNumberToObject(data, "uptime_seconds", device_info.uptime_seconds);
+    cJSON_AddStringToObject(data, "mac_address", device_info.mac_address);
+
+    cJSON_AddStringToObject(json, "status", "success");
+    cJSON_AddItemToObject(json, "data", data);
+
+    esp_err_t ret = send_json_response(req, json, 200);
+    cJSON_Delete(json);
+    return ret;
+}
+
+/**
+ * 运行时间处理函数 - 轻量级API
+ */
+static esp_err_t device_uptime_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "⏱️ Device uptime requested");
+
+    uint32_t uptime_seconds = xTaskGetTickCount() / configTICK_RATE_HZ;
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(data, "uptime_seconds", uptime_seconds);
+    cJSON_AddNumberToObject(data, "timestamp", uptime_seconds); // 为兼容性保留
 
     cJSON_AddStringToObject(json, "status", "success");
     cJSON_AddItemToObject(json, "data", data);
@@ -483,6 +506,15 @@ static esp_err_t register_handlers(httpd_handle_t server)
     };
     httpd_register_uri_handler(server, &device_health_uri);
 
+    // 设备运行时间API（轻量级）
+    httpd_uri_t device_uptime_uri = {
+        .uri = API_DEVICE_UPTIME,
+        .method = HTTP_GET,
+        .handler = device_uptime_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &device_uptime_uri);
+
     // OTA上传API
     httpd_uri_t ota_upload_uri = {
         .uri = API_OTA_UPLOAD,
@@ -629,18 +661,28 @@ esp_err_t http_server_get_device_info(device_info_t* info)
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
-    // 获取应用描述信息
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-
-    // 填充设备信息
-    strncpy(info->device_name, "ESP32 Control Board", sizeof(info->device_name) - 1);
+    // 填充设备信息 - 使用version.h中的定义
+    strncpy(info->device_name, PROJECT_NAME, sizeof(info->device_name) - 1);
     info->device_name[sizeof(info->device_name) - 1] = '\0';
     
-    // 使用应用描述中的版本信息
-    strncpy(info->firmware_version, app_desc->version, sizeof(info->firmware_version) - 1);
+    // 优先使用version.h中定义的版本号，确保版本显示的一致性
+    strncpy(info->firmware_version, VERSION_STRING, sizeof(info->firmware_version) - 1);
     info->firmware_version[sizeof(info->firmware_version) - 1] = '\0';
     
-    strncpy(info->hardware_version, "v1.0", sizeof(info->hardware_version) - 1);
+    // 如果version.h中的版本为空或无效，则使用ESP-IDF应用描述符版本作为后备
+    if (strlen(info->firmware_version) == 0) {
+        const esp_app_desc_t *app_desc = esp_app_get_description();
+        if (app_desc && strlen(app_desc->version) > 0) {
+            strncpy(info->firmware_version, app_desc->version, sizeof(info->firmware_version) - 1);
+            info->firmware_version[sizeof(info->firmware_version) - 1] = '\0';
+        } else {
+            // 如果都获取不到，设置默认版本
+            strncpy(info->firmware_version, "Unknown", sizeof(info->firmware_version) - 1);
+            info->firmware_version[sizeof(info->firmware_version) - 1] = '\0';
+        }
+    }
+    
+    strncpy(info->hardware_version, HARDWARE_VERSION, sizeof(info->hardware_version) - 1);
     info->hardware_version[sizeof(info->hardware_version) - 1] = '\0';
     
     snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-%d核心", chip_info.cores);
