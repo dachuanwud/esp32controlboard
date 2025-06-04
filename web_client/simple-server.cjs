@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 5173;
+const PORT = 3000;
 const ESP32_IP = 'http://192.168.6.109';
 
 // MIME types
