@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { Card, Row, Col, Badge, Spinner, Alert, ProgressBar, Button, Form } from 'react-bootstrap'
-import { deviceAPI, DeviceStatus as DeviceStatusType, deviceManagementAPI } from '../services/api'
+import { Card, Badge, Spinner, Alert, ProgressBar, Button, Form } from 'react-bootstrap'
+import { DeviceStatus as DeviceStatusType, deviceManagementAPI } from '../services/api'
 import { useDeviceAPI } from '../contexts/DeviceContext'
 
 const DeviceStatus: React.FC = () => {

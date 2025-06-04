@@ -91,6 +91,13 @@ export interface DeviceStatus {
   motor_right_speed: number
   last_sbus_time: number
   last_cmd_time: number
+  // 添加缺少的字段
+  free_heap: number
+  total_heap: number
+  uptime_seconds: number
+  task_count: number
+  can_tx_count: number
+  can_rx_count: number
 }
 
 export interface OTAProgress {
@@ -208,6 +215,128 @@ export const wifiAPI = {
     }
     throw new Error(response.data.message || 'Failed to scan Wi-Fi networks')
   },
+}
+
+// 云设备类型定义
+export interface CloudDevice {
+  id: string
+  device_id: string
+  device_name: string
+  local_ip: string
+  device_type: string
+  firmware_version?: string
+  hardware_version?: string
+  mac_address?: string
+  status: 'online' | 'offline'
+  registered_at: string
+  last_seen?: string
+  created_at: string
+  updated_at: string
+  // 状态信息
+  sbus_connected?: boolean
+  can_connected?: boolean
+  wifi_connected?: boolean
+  wifi_ip?: string
+  wifi_rssi?: number
+  free_heap?: number
+  total_heap?: number
+  uptime_seconds?: number
+  task_count?: number
+  can_tx_count?: number
+  can_rx_count?: number
+  sbus_channels?: number[]
+  motor_left_speed?: number
+  motor_right_speed?: number
+  last_sbus_time?: number
+  last_cmd_time?: number
+  status_timestamp?: string
+}
+
+export interface DeviceCommand {
+  id: string
+  device_id: string
+  command: string
+  data: any
+  status: 'pending' | 'sent' | 'completed' | 'failed'
+  created_at: string
+  sent_at?: string
+  completed_at?: string
+  error_message?: string
+}
+
+// 云服务器设备管理API (基于Supabase)
+export const cloudDeviceAPI = {
+  // 获取云服务器注册的设备列表
+  getRegisteredDevices: async (): Promise<CloudDevice[]> => {
+    const response = await axios.get('/devices')
+    if (response.data.status === 'success' && response.data.devices) {
+      return response.data.devices
+    }
+    throw new Error(response.data.message || 'Failed to get registered devices')
+  },
+
+  // 获取在线设备列表
+  getOnlineDevices: async (): Promise<CloudDevice[]> => {
+    const response = await axios.get('/devices/online')
+    if (response.data.status === 'success' && response.data.devices) {
+      return response.data.devices
+    }
+    throw new Error(response.data.message || 'Failed to get online devices')
+  },
+
+  // 发送指令到设备
+  sendCommand: async (deviceId: string, command: string, data: any = {}): Promise<void> => {
+    const response = await axios.post('/send-command', { deviceId, command, data })
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to send command')
+    }
+  },
+
+  // 获取设备状态
+  getDeviceStatus: async (deviceId: string): Promise<DeviceStatus> => {
+    const response = await axios.get(`/api/device-status?deviceId=${deviceId}`)
+    if (response.data.status === 'success' && response.data.data) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to get device status')
+  },
+
+  // 获取设备状态历史
+  getDeviceStatusHistory: async (deviceId: string, limit: number = 100): Promise<DeviceStatus[]> => {
+    const response = await axios.get(`/api/device-status-history?deviceId=${deviceId}&limit=${limit}`)
+    if (response.data.status === 'success' && response.data.data) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to get device status history')
+  },
+
+  // 获取设备待处理指令
+  getPendingCommands: async (deviceId: string): Promise<DeviceCommand[]> => {
+    const response = await axios.get(`/api/device-commands?deviceId=${deviceId}`)
+    if (response.data.status === 'success' && response.data.commands) {
+      return response.data.commands
+    }
+    throw new Error(response.data.message || 'Failed to get pending commands')
+  },
+
+  // 标记指令完成
+  markCommandCompleted: async (commandId: string, success: boolean = true, errorMessage?: string): Promise<void> => {
+    const response = await axios.post(`/api/device-commands/${commandId}/complete`, {
+      success,
+      errorMessage
+    })
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to mark command as completed')
+    }
+  },
+
+  // 删除设备
+  deleteDevice: async (deviceId: string): Promise<void> => {
+    const response = await axios.delete(`/api/devices/${deviceId}`)
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to delete device')
+    }
+  }
 }
 
 // 设备管理API

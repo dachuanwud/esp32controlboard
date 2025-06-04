@@ -56,7 +56,7 @@ const OTAUpdate: React.FC = () => {
       // 模拟文件输入事件
       const fakeEvent = {
         target: { files: [file] }
-      } as React.ChangeEvent<HTMLInputElement>
+      } as unknown as React.ChangeEvent<HTMLInputElement>
       handleFileSelect(fakeEvent)
     }
   }
