@@ -190,7 +190,6 @@ coverage/
 *.prof
 
 # 开发过程中的临时代码文件
-esp32_code/
 temp/
 tmp/
 
