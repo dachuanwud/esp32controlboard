@@ -6,6 +6,8 @@
 #include "http_server.h"
 #include "ota_manager.h"
 #include "cloud_client.h"
+#include "data_integration.h"
+#include "log_config.h"
 #include <string.h>
 #include <inttypes.h>
 #include "esp_app_desc.h"
@@ -92,6 +94,78 @@ static bool get_motor_status(int8_t* left, int8_t* right)
     // 检查数据是否新鲜（5秒内更新过）
     uint32_t current_time = xTaskGetTickCount();
     return (current_time - g_last_motor_update) < pdMS_TO_TICKS(5000);
+}
+
+/**
+ * 数据集成回调函数 - 获取SBUS状态
+ */
+static esp_err_t data_integration_get_sbus_status_callback(bool* connected, uint16_t* channels, uint32_t* last_time)
+{
+    if (!connected || !channels || !last_time) {
+        ESP_LOGE(TAG, "❌ SBUS回调参数无效");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // 检查数据是否新鲜（5秒内更新过）
+    uint32_t current_time = xTaskGetTickCount();
+    uint32_t time_diff = current_time - g_last_sbus_update;
+    *connected = time_diff < pdMS_TO_TICKS(5000);
+
+    // 复制通道数据
+    for (int i = 0; i < 16; i++) {
+        channels[i] = g_last_sbus_channels[i];
+    }
+
+    *last_time = g_last_sbus_update;
+
+    ESP_LOGD(TAG, "🎮 SBUS状态回调 - 连接: %s, 数据年龄: %dms",
+             *connected ? "是" : "否", time_diff * portTICK_PERIOD_MS);
+
+    return ESP_OK;
+}
+
+/**
+ * 数据集成回调函数 - 获取电机状态
+ */
+static esp_err_t data_integration_get_motor_status_callback(int* left_speed, int* right_speed, uint32_t* last_time)
+{
+    if (!left_speed || !right_speed || !last_time) {
+        ESP_LOGE(TAG, "❌ 电机回调参数无效");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *left_speed = g_last_motor_left;
+    *right_speed = g_last_motor_right;
+    *last_time = g_last_motor_update;
+
+    uint32_t current_time = xTaskGetTickCount();
+    uint32_t time_diff = current_time - g_last_motor_update;
+
+    ESP_LOGD(TAG, "🚗 电机状态回调 - 左: %d, 右: %d, 数据年龄: %dms",
+             *left_speed, *right_speed, time_diff * portTICK_PERIOD_MS);
+
+    return ESP_OK;
+}
+
+/**
+ * 数据集成回调函数 - 获取CAN状态
+ */
+static esp_err_t data_integration_get_can_status_callback(bool* connected, uint32_t* tx_count, uint32_t* rx_count)
+{
+    if (!connected || !tx_count || !rx_count) {
+        ESP_LOGE(TAG, "❌ CAN回调参数无效");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // TODO: 实现实际的CAN状态检测
+    *connected = false;  // 暂时设为false
+    *tx_count = 0;
+    *rx_count = 0;
+
+    ESP_LOGD(TAG, "🚌 CAN状态回调 - 连接: %s, TX: %d, RX: %d",
+             *connected ? "是" : "否", *tx_count, *rx_count);
+
+    return ESP_OK;
 }
 
 /**
@@ -305,12 +379,40 @@ static void wifi_management_task(void *pvParameters)
             ESP_LOGE(TAG, "❌ Failed to start HTTP server");
         }
 
-        // 初始化并启动云客户端
+        ESP_LOGI(TAG, "🔧 开始初始化云服务集成...");
+
+        // 初始化数据集成模块
+        ESP_LOGI(TAG, "📊 初始化数据集成模块...");
+        if (data_integration_init() == ESP_OK) {
+            ESP_LOGI(TAG, "✅ 数据集成模块初始化成功");
+
+            // 设置数据获取回调函数
+            ESP_LOGI(TAG, "📋 设置数据获取回调函数...");
+            data_integration_set_callbacks(
+                data_integration_get_sbus_status_callback,
+                data_integration_get_motor_status_callback,
+                data_integration_get_can_status_callback
+            );
+            ESP_LOGI(TAG, "✅ 数据回调函数设置完成");
+        } else {
+            ESP_LOGE(TAG, "❌ 数据集成模块初始化失败");
+        }
+
+        // 初始化并启动云客户端（增强版Supabase集成）
+        ESP_LOGI(TAG, "🌐 初始化云客户端...");
         if (cloud_client_init() == ESP_OK) {
-            ESP_LOGI(TAG, "🌐 Cloud client initialized successfully");
+            ESP_LOGI(TAG, "✅ 云客户端初始化成功");
+
+            // 设置设备认证（可选）
+            // ESP_LOGI(TAG, "🔐 设置设备认证...");
+            // cloud_client_set_auth("your_device_key_here");
 
             // 注册设备到云服务器
+            ESP_LOGI(TAG, "📡 注册设备到Supabase云服务器...");
             const device_info_t* device_info = cloud_client_get_device_info();
+            ESP_LOGI(TAG, "🆔 设备信息 - ID: %s, 名称: %s",
+                     device_info->device_id, device_info->device_name);
+
             esp_err_t reg_ret = cloud_client_register_device(
                 device_info->device_id,
                 device_info->device_name,
@@ -318,24 +420,45 @@ static void wifi_management_task(void *pvParameters)
             );
 
             if (reg_ret == ESP_OK) {
-                ESP_LOGI(TAG, "✅ Device registered to cloud server");
+                ESP_LOGI(TAG, "✅ 设备注册到云服务器成功");
+                ESP_LOGI(TAG, "🎉 设备已成功连接到Supabase数据库");
 
                 // 启动云客户端
+                ESP_LOGI(TAG, "🚀 启动云客户端后台服务...");
                 if (cloud_client_start() == ESP_OK) {
-                    ESP_LOGI(TAG, "🚀 Cloud client started successfully");
+                    ESP_LOGI(TAG, "✅ 云客户端启动成功");
+                    ESP_LOGI(TAG, "📊 状态上报服务已开始运行");
                 } else {
-                    ESP_LOGE(TAG, "❌ Failed to start cloud client");
+                    ESP_LOGE(TAG, "❌ 云客户端启动失败");
                 }
             } else {
-                ESP_LOGW(TAG, "⚠️ Failed to register device to cloud server, will retry later");
+                ESP_LOGW(TAG, "⚠️ 设备注册失败，将在后台重试");
+                ESP_LOGI(TAG, "🔄 启动云客户端进行后台重试...");
                 // 即使注册失败也启动云客户端，它会在后台重试
-                cloud_client_start();
+                if (cloud_client_start() == ESP_OK) {
+                    ESP_LOGI(TAG, "✅ 云客户端后台重试服务已启动");
+                } else {
+                    ESP_LOGE(TAG, "❌ 云客户端后台重试服务启动失败");
+                }
             }
         } else {
-            ESP_LOGE(TAG, "❌ Failed to initialize cloud client");
+            ESP_LOGE(TAG, "❌ 云客户端初始化失败");
         }
+
+        ESP_LOGI(TAG, "🎯 云服务集成初始化完成");
+
+        // 打印网络状态信息
+        print_network_status();
+
+        // 打印云服务状态信息
+        print_cloud_status();
+
+        // 启用调试日志（可选，用于开发阶段）
+        // enable_debug_logging();
+
     } else {
-        ESP_LOGW(TAG, "⚠️ Failed to connect to Wi-Fi, will retry periodically");
+        ESP_LOGW(TAG, "⚠️ Wi-Fi连接失败，将定期重试");
+        ESP_LOGI(TAG, "🔄 Wi-Fi管理器将在后台自动重试连接");
     }
 
     while (1) {
@@ -550,9 +673,19 @@ static void app_timer_init(void)
 void app_main(void)
 {
     // ====================================================================
+    // 日志系统配置
+    // ====================================================================
+
+    // 配置日志系统
+    configure_logging();
+
+    // 打印系统信息
+    print_system_info();
+
+    // ====================================================================
     // 系统启动和版本信息输出
     // ====================================================================
-    
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "====================================");
     ESP_LOGI(TAG, "🚀 %s", PROJECT_NAME);

@@ -15,6 +15,13 @@ extern "C" {
 #define DEVICE_STATUS_INTERVAL_MS 30000  // 30秒上报一次状态
 #define COMMAND_POLL_INTERVAL_MS 10000   // 10秒轮询一次指令
 
+// Supabase集成配置
+#define SUPABASE_PROJECT_URL "https://hfmifzmuwcmtgyjfhxvx.supabase.co"
+#define SUPABASE_ANON_KEY "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbWlmem11d2NtdGd5amZoeHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkwMjIzNTEsImV4cCI6MjA2NDU5ODM1MX0.YPTUXgVdb8YMwwUWmG4nGdGIOvnTe6zvavMieL-RlTE"
+#define MAX_HTTP_RESPONSE_SIZE 4096
+#define MAX_RETRY_ATTEMPTS 3
+#define RETRY_DELAY_MS 5000
+
 // 设备状态枚举
 typedef enum {
     CLOUD_STATUS_OFFLINE = 0,
@@ -40,15 +47,49 @@ typedef struct {
     uint32_t timestamp;
 } cloud_command_t;
 
+// 网络连接状态
+typedef enum {
+    NETWORK_DISCONNECTED = 0,
+    NETWORK_CONNECTING,
+    NETWORK_CONNECTED,
+    NETWORK_ERROR
+} network_status_t;
+
 // 设备信息结构体
 typedef struct {
     char device_id[64];
     char device_name[128];
     char local_ip[16];
     char device_type[32];
+    char firmware_version[32];
+    char hardware_version[32];
+    char mac_address[18];
     cloud_status_t status;
+    network_status_t network_status;
     uint32_t last_seen;
+    uint32_t retry_count;
 } device_info_t;
+
+// 设备状态数据结构体（与Supabase兼容）
+typedef struct {
+    bool sbus_connected;
+    bool can_connected;
+    bool wifi_connected;
+    char wifi_ip[16];
+    int wifi_rssi;
+    uint32_t free_heap;
+    uint32_t total_heap;
+    uint32_t uptime_seconds;
+    int task_count;
+    uint32_t can_tx_count;
+    uint32_t can_rx_count;
+    int sbus_channels[16];  // 支持更多通道
+    int motor_left_speed;
+    int motor_right_speed;
+    uint32_t last_sbus_time;
+    uint32_t last_cmd_time;
+    uint32_t timestamp;
+} device_status_data_t;
 
 /**
  * 初始化云客户端
@@ -110,6 +151,44 @@ bool cloud_client_is_connected(void);
  * @return 设备信息指针
  */
 const device_info_t* cloud_client_get_device_info(void);
+
+/**
+ * 发送完整设备状态到Supabase
+ * @param status_data 设备状态数据
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_send_device_status(const device_status_data_t* status_data);
+
+/**
+ * 获取网络连接状态
+ * @return 网络状态
+ */
+network_status_t cloud_client_get_network_status(void);
+
+/**
+ * 设置设备认证信息
+ * @param device_key 设备密钥
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_set_auth(const char* device_key);
+
+/**
+ * 执行网络重连
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_reconnect(void);
+
+/**
+ * 获取最后错误信息
+ * @return 错误信息字符串
+ */
+const char* cloud_client_get_last_error(void);
+
+/**
+ * 设置状态更新回调函数
+ * @param callback 状态更新回调
+ */
+void cloud_client_set_status_callback(void (*callback)(const device_status_data_t* status));
 
 #ifdef __cplusplus
 }
