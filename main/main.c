@@ -5,6 +5,7 @@
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "ota_manager.h"
+#include "cloud_client.h"
 #include <string.h>
 #include <inttypes.h>
 #include "esp_app_desc.h"
@@ -29,6 +30,7 @@ static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t status_task_handle = NULL;
 static TaskHandle_t wifi_task_handle = NULL;
 static TaskHandle_t http_task_handle = NULL;
+static TaskHandle_t cloud_task_handle = NULL;
 
 // Wi-Fi配置 - 可以通过Web界面或硬编码配置
 #define DEFAULT_WIFI_SSID     "WangCun"
@@ -301,6 +303,36 @@ static void wifi_management_task(void *pvParameters)
             ESP_LOGI(TAG, "🔗 Web interface available at: http://%s", wifi_manager_get_ip_address());
         } else {
             ESP_LOGE(TAG, "❌ Failed to start HTTP server");
+        }
+
+        // 初始化并启动云客户端
+        if (cloud_client_init() == ESP_OK) {
+            ESP_LOGI(TAG, "🌐 Cloud client initialized successfully");
+
+            // 注册设备到云服务器
+            const device_info_t* device_info = cloud_client_get_device_info();
+            esp_err_t reg_ret = cloud_client_register_device(
+                device_info->device_id,
+                device_info->device_name,
+                wifi_manager_get_ip_address()
+            );
+
+            if (reg_ret == ESP_OK) {
+                ESP_LOGI(TAG, "✅ Device registered to cloud server");
+
+                // 启动云客户端
+                if (cloud_client_start() == ESP_OK) {
+                    ESP_LOGI(TAG, "🚀 Cloud client started successfully");
+                } else {
+                    ESP_LOGE(TAG, "❌ Failed to start cloud client");
+                }
+            } else {
+                ESP_LOGW(TAG, "⚠️ Failed to register device to cloud server, will retry later");
+                // 即使注册失败也启动云客户端，它会在后台重试
+                cloud_client_start();
+            }
+        } else {
+            ESP_LOGE(TAG, "❌ Failed to initialize cloud client");
         }
     } else {
         ESP_LOGW(TAG, "⚠️ Failed to connect to Wi-Fi, will retry periodically");
