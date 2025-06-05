@@ -7,7 +7,7 @@ const WiFiSettings: React.FC = () => {
   const [networks, setNetworks] = useState<any[]>([])
   const [ssid, setSsid] = useState('')
   const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(false)
+
   const [scanning, setScanning] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)

@@ -7,6 +7,8 @@ import DeviceStatus from './components/DeviceStatus'
 import OTAUpdate from './components/OTAUpdate'
 import WiFiSettings from './components/WiFiSettings'
 import DeviceManager from './components/DeviceManager'
+import CloudDeviceManager from './components/CloudDeviceManager'
+import CloudDeviceStatus from './components/CloudDeviceStatus'
 
 // 主应用内容组件
 const AppContent: React.FC = () => {
@@ -30,6 +32,8 @@ const AppContent: React.FC = () => {
       case '/status': return '📈 实时状态'
       case '/ota': return '🔄 OTA更新'
       case '/wifi': return '📶 Wi-Fi设置'
+      case '/devices': return '☁️ 云设备管理'
+      case '/cloud-status': return '📈 云设备状态'
       default: return '🎛️ ESP32控制板'
     }
   }
@@ -129,6 +133,20 @@ const AppContent: React.FC = () => {
               >
                 📶 Wi-Fi设置
               </Nav.Link>
+              <Nav.Link
+                as={Link}
+                to="/devices"
+                className={`nav-link-custom ${isActiveRoute('/devices') ? 'active' : ''}`}
+              >
+                ☁️ 云设备管理
+              </Nav.Link>
+              <Nav.Link
+                as={Link}
+                to="/cloud-status"
+                className={`nav-link-custom ${isActiveRoute('/cloud-status') ? 'active' : ''}`}
+              >
+                📈 云设备状态
+              </Nav.Link>
             </Nav>
           </Navbar.Collapse>
         </Container>
@@ -164,42 +182,63 @@ const AppContent: React.FC = () => {
         </div>
 
         {/* 路由内容 */}
-        {selectedDevice ? (
-          <Routes>
-            <Route path="/" element={<DeviceInfo />} />
-            <Route path="/status" element={<DeviceStatus />} />
-            <Route path="/ota" element={<OTAUpdate />} />
-            <Route path="/wifi" element={<WiFiSettings />} />
-          </Routes>
-        ) : (
-          <div className="text-center py-5">
-            <div className="card-custom p-5">
-              <h3 className="text-muted mb-4">🎛️ 欢迎使用ESP32控制板Web上位机</h3>
-              <p className="text-secondary mb-4">
-                请先添加您的ESP32设备以开始使用。您可以通过以下方式添加设备：
-              </p>
-              <div className="row justify-content-center">
-                <div className="col-md-8">
-                  <div className="d-grid gap-3">
-                    <Button
-                      variant="primary"
-                      size="lg"
-                      onClick={() => setShowDeviceManager(true)}
-                      className="btn-custom"
-                    >
-                      🔧 打开设备管理
-                    </Button>
-                    <div className="text-muted">
-                      <small>
-                        💡 提示：确保您的ESP32设备已连接到网络，并且可以通过IP地址访问
-                      </small>
+        <Routes>
+          {/* 云设备管理路由 - 不需要本地设备选择 */}
+          <Route path="/devices" element={<CloudDeviceManager />} />
+          <Route path="/cloud-status" element={<CloudDeviceStatus />} />
+
+          {/* 本地设备管理路由 - 需要设备选择 */}
+          {selectedDevice ? (
+            <>
+              <Route path="/" element={<DeviceInfo />} />
+              <Route path="/status" element={<DeviceStatus />} />
+              <Route path="/ota" element={<OTAUpdate />} />
+              <Route path="/wifi" element={<WiFiSettings />} />
+            </>
+          ) : (
+            <Route path="/" element={
+              <div className="text-center py-5">
+                <div className="card-custom p-5">
+                  <h3 className="text-muted mb-4">🎛️ 欢迎使用ESP32控制板Web上位机</h3>
+                  <p className="text-secondary mb-4">
+                    请先添加您的ESP32设备以开始使用。您可以通过以下方式添加设备：
+                  </p>
+                  <div className="row justify-content-center">
+                    <div className="col-md-8">
+                      <div className="d-grid gap-3">
+                        <Button
+                          variant="primary"
+                          size="lg"
+                          onClick={() => setShowDeviceManager(true)}
+                          className="btn-custom"
+                        >
+                          🔧 打开设备管理
+                        </Button>
+                        <div className="text-muted">
+                          <small>
+                            💡 提示：确保您的ESP32设备已连接到网络，并且可以通过IP地址访问
+                          </small>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <hr className="my-4" />
+                  <div className="text-center">
+                    <p className="text-muted mb-3">或者查看云服务器注册的设备：</p>
+                    <div className="d-flex gap-2 justify-content-center">
+                      <Link to="/devices" className="btn btn-outline-info btn-custom">
+                        ☁️ 云设备管理
+                      </Link>
+                      <Link to="/cloud-status" className="btn btn-outline-success btn-custom">
+                        📈 云设备状态
+                      </Link>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            } />
+          )}
+        </Routes>
 
         {/* 设备管理对话框 */}
         <DeviceManager

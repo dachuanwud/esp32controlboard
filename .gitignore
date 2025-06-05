@@ -138,6 +138,43 @@ Icon?
 *.7z
 
 # ===========================================
+# 云服务器相关忽略文件
+# ===========================================
+
+# Node.js 云服务器依赖包
+cloud_server/node_modules/
+
+# 云服务器环境配置
+cloud_server/.env
+cloud_server/.env.local
+cloud_server/.env.development.local
+cloud_server/.env.test.local
+cloud_server/.env.production.local
+
+# 云服务器日志文件
+cloud_server/npm-debug.log*
+cloud_server/yarn-debug.log*
+cloud_server/yarn-error.log*
+cloud_server/pnpm-debug.log*
+
+# 云服务器运行时文件
+cloud_server/logs/
+cloud_server/*.log
+
+# ===========================================
+# Supabase 相关忽略文件
+# ===========================================
+
+# Supabase 本地配置
+.supabase/
+supabase/.env
+supabase/.env.local
+
+# Supabase 密钥文件（安全考虑）
+**/supabase-key.json
+**/service-account-key.json
+
+# ===========================================
 # 项目特定忽略文件
 # ===========================================
 
@@ -151,3 +188,24 @@ coverage/
 
 # 性能分析文件
 *.prof
+
+# 开发过程中的临时代码文件
+temp/
+tmp/
+
+# 数据库备份文件
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+
+# 证书和密钥文件
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# 配置文件中的敏感信息
+config/secrets.json
+config/production.json

@@ -210,7 +210,7 @@ export class DeviceStorageService {
    * 生成唯一的设备ID
    */
   static generateDeviceId(ip: string, deviceName?: string): string {
-    const timestamp = Date.now()
+
     const random = Math.random().toString(36).substr(2, 9)
     const ipSuffix = ip.split('.').pop() || '000'
     const nameSuffix = deviceName ? deviceName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : 'esp32'
