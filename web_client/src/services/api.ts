@@ -332,9 +332,25 @@ export const cloudDeviceAPI = {
 
   // 删除设备
   deleteDevice: async (deviceId: string): Promise<void> => {
-    const response = await axios.delete(`/api/devices/${deviceId}`)
+    const response = await axios.delete(`/devices/${deviceId}`)
     if (response.data.status !== 'success') {
       throw new Error(response.data.message || 'Failed to delete device')
+    }
+  },
+
+  // 批量删除设备
+  deleteDevices: async (deviceIds: string[]): Promise<void> => {
+    const response = await axios.post('/devices/batch-delete', { deviceIds })
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to delete devices')
+    }
+  },
+
+  // 设备注销 (ESP32主动注销)
+  unregisterDevice: async (deviceId: string, reason: string = 'device_shutdown'): Promise<void> => {
+    const response = await axios.post('/unregister-device', { deviceId, reason })
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to unregister device')
     }
   }
 }

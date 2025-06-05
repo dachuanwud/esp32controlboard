@@ -266,3 +266,64 @@ void markCommandCompleted(String commandId, bool success) {
   
   http.end();
 }
+
+void unregisterDevice(String reason = "device_shutdown") {
+  HTTPClient http;
+  http.begin(String(serverURL) + "/unregister-device");
+  http.addHeader("Content-Type", "application/json");
+
+  // 构建注销数据
+  DynamicJsonDocument doc(512);
+  doc["deviceId"] = deviceId;
+  doc["reason"] = reason;
+
+  String jsonString;
+  serializeJson(doc, jsonString);
+
+  Serial.println("注销设备从云服务器...");
+  Serial.println("注销原因: " + reason);
+  Serial.println("注销数据: " + jsonString);
+
+  int httpResponseCode = http.POST(jsonString);
+
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.println("注销响应码: " + String(httpResponseCode));
+    Serial.println("注销响应: " + response);
+
+    // 解析响应
+    DynamicJsonDocument responseDoc(1024);
+    deserializeJson(responseDoc, response);
+
+    if (responseDoc["status"] == "success") {
+      Serial.println("✅ 设备注销成功!");
+    } else {
+      Serial.println("❌ 设备注销失败: " + responseDoc["message"].as<String>());
+    }
+  } else {
+    Serial.println("❌ 注销请求失败，错误码: " + String(httpResponseCode));
+  }
+
+  http.end();
+}
+
+// 在设备重启前调用注销函数
+void gracefulShutdown() {
+  Serial.println("🛑 设备准备关闭，执行优雅注销...");
+
+  // 发送最后一次状态更新
+  sendStatusUpdate();
+  delay(1000);
+
+  // 注销设备
+  unregisterDevice("device_restart");
+  delay(1000);
+
+  Serial.println("✅ 优雅注销完成");
+}
+
+// 在WiFi断开时调用
+void onWiFiDisconnected() {
+  Serial.println("📡 WiFi连接断开，尝试注销设备...");
+  unregisterDevice("wifi_disconnected");
+}

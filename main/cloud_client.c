@@ -984,3 +984,106 @@ __attribute__((unused)) static esp_err_t register_device_enhanced(void)
 
     return ret;
 }
+
+/**
+ * 注销设备从云服务器
+ */
+esp_err_t cloud_client_unregister_device(const char* reason)
+{
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "⚠️ Wi-Fi未连接，无法注销设备");
+        return ESP_ERR_WIFI_NOT_CONNECT;
+    }
+
+    ESP_LOGI(TAG, "📤 开始注销设备: %s", s_device_info.device_id);
+    ESP_LOGI(TAG, "📋 注销原因: %s", reason ? reason : "device_shutdown");
+
+    // 创建注销JSON数据
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        set_last_error("创建注销JSON失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddStringToObject(json, "deviceId", s_device_info.device_id);
+    cJSON_AddStringToObject(json, "reason", reason ? reason : "device_shutdown");
+
+    char *json_string = cJSON_Print(json);
+    cJSON_Delete(json);
+
+    if (!json_string) {
+        set_last_error("序列化注销JSON失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGD(TAG, "📤 注销数据: %s", json_string);
+
+    // 发送注销请求
+    char url[256];
+    snprintf(url, sizeof(url), "%s/unregister-device", CLOUD_SERVER_URL);
+
+    esp_err_t ret = send_http_post(url, json_string);
+
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "✅ 设备注销成功");
+        s_device_info.status = CLOUD_STATUS_OFFLINE;
+    } else {
+        ESP_LOGE(TAG, "❌ 设备注销失败");
+        set_last_error("设备注销HTTP请求失败");
+    }
+
+    free(json_string);
+    return ret;
+}
+
+/**
+ * 优雅关闭云客户端
+ */
+esp_err_t cloud_client_graceful_shutdown(const char* reason)
+{
+    ESP_LOGI(TAG, "🛑 开始优雅关闭云客户端...");
+    ESP_LOGI(TAG, "📋 关闭原因: %s", reason ? reason : "system_shutdown");
+
+    esp_err_t ret = ESP_OK;
+
+    // 如果客户端正在运行，先发送最后一次状态更新
+    if (s_client_running && s_client_connected) {
+        ESP_LOGI(TAG, "📊 发送最后一次状态更新...");
+
+        // 收集当前状态
+        device_status_data_t final_status = {0};
+        final_status.wifi_connected = wifi_manager_is_connected();
+        strncpy(final_status.wifi_ip, wifi_manager_get_ip_address(), sizeof(final_status.wifi_ip) - 1);
+        final_status.wifi_rssi = wifi_manager_get_rssi();
+        final_status.free_heap = esp_get_free_heap_size();
+        final_status.total_heap = esp_get_minimum_free_heap_size();
+        final_status.uptime_seconds = xTaskGetTickCount() * portTICK_PERIOD_MS / 1000;
+        final_status.timestamp = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        // 发送最后状态
+        cloud_client_send_device_status(&final_status);
+        vTaskDelay(pdMS_TO_TICKS(1000)); // 等待发送完成
+    }
+
+    // 注销设备
+    if (s_client_connected) {
+        ESP_LOGI(TAG, "📤 注销设备...");
+        esp_err_t unregister_ret = cloud_client_unregister_device(reason);
+        if (unregister_ret != ESP_OK) {
+            ESP_LOGW(TAG, "⚠️ 设备注销失败，但继续关闭流程");
+            ret = unregister_ret;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // 等待注销完成
+    }
+
+    // 停止云客户端
+    ESP_LOGI(TAG, "🛑 停止云客户端服务...");
+    esp_err_t stop_ret = cloud_client_stop();
+    if (stop_ret != ESP_OK) {
+        ESP_LOGW(TAG, "⚠️ 停止云客户端失败");
+        ret = stop_ret;
+    }
+
+    ESP_LOGI(TAG, "✅ 云客户端优雅关闭完成");
+    return ret;
+}

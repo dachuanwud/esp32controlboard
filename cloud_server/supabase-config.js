@@ -24,24 +24,71 @@ class SupabaseDeviceService {
     try {
       const { device_id, device_name, local_ip, device_type = 'ESP32', firmware_version, hardware_version, mac_address } = deviceData
 
-      // 调用存储过程注册设备
-      const { data, error } = await this.admin.rpc('register_device', {
-        p_device_id: device_id,
-        p_device_name: device_name,
-        p_local_ip: local_ip,
-        p_device_type: device_type,
-        p_firmware_version: firmware_version,
-        p_hardware_version: hardware_version,
-        p_mac_address: mac_address
-      })
-
-      if (error) {
-        console.error('设备注册失败:', error)
-        throw error
+      // 验证必要参数
+      if (!device_id || !local_ip) {
+        throw new Error('设备ID和本地IP不能为空')
       }
 
-      console.log(`📱 设备已注册到Supabase: ${device_name} (${local_ip})`)
-      return data
+      // 先检查设备是否已存在
+      const { data: existingDevice } = await this.client
+        .from('esp32_devices')
+        .select('device_id')
+        .eq('device_id', device_id)
+        .single()
+
+      if (existingDevice) {
+        // 设备已存在，更新信息
+        const { data, error } = await this.admin
+          .from('esp32_devices')
+          .update({
+            device_name: device_name || `${device_type}-${device_id}`,
+            local_ip,
+            device_type,
+            firmware_version,
+            hardware_version,
+            mac_address,
+            status: 'online',
+            last_seen: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('device_id', device_id)
+          .select()
+          .single()
+
+        if (error) {
+          console.error('更新设备信息失败:', error)
+          throw error
+        }
+
+        console.log(`📱 设备信息已更新到Supabase: ${device_name} (${local_ip})`)
+        return data
+      } else {
+        // 设备不存在，创建新设备
+        const { data, error } = await this.admin
+          .from('esp32_devices')
+          .insert({
+            device_id,
+            device_name: device_name || `${device_type}-${device_id}`,
+            local_ip,
+            device_type,
+            firmware_version,
+            hardware_version,
+            mac_address,
+            status: 'online',
+            registered_at: new Date().toISOString(),
+            last_seen: new Date().toISOString()
+          })
+          .select()
+          .single()
+
+        if (error) {
+          console.error('设备注册失败:', error)
+          throw error
+        }
+
+        console.log(`📱 设备已注册到Supabase: ${device_name} (${local_ip})`)
+        return data
+      }
     } catch (error) {
       console.error('注册设备时发生错误:', error)
       throw error
@@ -241,24 +288,95 @@ class SupabaseDeviceService {
   }
 
   /**
-   * 删除设备
+   * 删除设备 (级联删除相关数据)
    */
   async deleteDevice(deviceId) {
     try {
+      console.log(`🗑️ 开始删除设备: ${deviceId}`)
+
+      // 首先检查设备是否存在
+      const { data: existingDevice } = await this.client
+        .from('esp32_devices')
+        .select('device_id, device_name')
+        .eq('device_id', deviceId)
+        .single()
+
+      if (!existingDevice) {
+        throw new Error(`设备不存在: ${deviceId}`)
+      }
+
+      console.log(`📋 找到设备: ${existingDevice.device_name} (${deviceId})`)
+
+      // 删除设备状态历史记录
+      const { error: statusError } = await this.admin
+        .from('device_status')
+        .delete()
+        .eq('device_id', deviceId)
+
+      if (statusError) {
+        console.warn('删除设备状态记录时出现警告:', statusError)
+      } else {
+        console.log(`🗑️ 已删除设备状态记录: ${deviceId}`)
+      }
+
+      // 删除设备指令记录
+      const { error: commandError } = await this.admin
+        .from('device_commands')
+        .delete()
+        .eq('device_id', deviceId)
+
+      if (commandError) {
+        console.warn('删除设备指令记录时出现警告:', commandError)
+      } else {
+        console.log(`🗑️ 已删除设备指令记录: ${deviceId}`)
+      }
+
+      // 最后删除设备主记录
       const { data, error } = await this.admin
         .from('esp32_devices')
         .delete()
         .eq('device_id', deviceId)
+        .select()
 
       if (error) {
-        console.error('删除设备失败:', error)
+        console.error('删除设备主记录失败:', error)
         throw error
       }
 
-      console.log(`🗑️ 设备已从Supabase删除: ${deviceId}`)
-      return data
+      console.log(`✅ 设备及相关数据已完全删除: ${existingDevice.device_name} (${deviceId})`)
+      return {
+        deleted_device: existingDevice,
+        deleted_records: data
+      }
     } catch (error) {
       console.error('删除设备时发生错误:', error)
+      throw error
+    }
+  }
+
+  /**
+   * 批量删除设备
+   */
+  async deleteDevices(deviceIds) {
+    try {
+      console.log(`🗑️ 开始批量删除设备: ${deviceIds.length} 个`)
+
+      const results = []
+      const errors = []
+
+      for (const deviceId of deviceIds) {
+        try {
+          const result = await this.deleteDevice(deviceId)
+          results.push({ deviceId, result })
+        } catch (error) {
+          errors.push({ deviceId, error: error.message })
+        }
+      }
+
+      console.log(`✅ 批量删除完成: 成功 ${results.length} 个，失败 ${errors.length} 个`)
+      return { results, errors }
+    } catch (error) {
+      console.error('批量删除设备时发生错误:', error)
       throw error
     }
   }

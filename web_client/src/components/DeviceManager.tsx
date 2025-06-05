@@ -234,10 +234,17 @@ const DeviceManager: React.FC<DeviceManagerProps> = ({
 
   // 删除设备
   const handleDeleteDevice = (device: Device) => {
-    if (window.confirm(`确定要删除设备 "${device.name}" 吗？`)) {
-      DeviceStorageService.removeDevice(device.id)
-      onDeviceDeleted(device.id)
-      setSuccess(`设备 "${device.name}" 已删除`)
+    const confirmMessage = `确定要删除设备 "${device.name}" 吗？\n\n此操作将：\n• 从本地存储中移除设备记录\n• 清除设备的所有配置信息\n• 此操作不可撤销\n\n设备IP: ${device.ip}\n最后连接: ${device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '从未连接'}`
+
+    if (window.confirm(confirmMessage)) {
+      try {
+        DeviceStorageService.removeDevice(device.id)
+        onDeviceDeleted(device.id)
+        setSuccess(`设备 "${device.name}" 已成功删除`)
+        setError(null)
+      } catch (err) {
+        setError(`删除设备失败: ${err instanceof Error ? err.message : '未知错误'}`)
+      }
     }
   }
 

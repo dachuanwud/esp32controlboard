@@ -190,6 +190,20 @@ const char* cloud_client_get_last_error(void);
  */
 void cloud_client_set_status_callback(void (*callback)(const device_status_data_t* status));
 
+/**
+ * 注销设备从云服务器
+ * @param reason 注销原因
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_unregister_device(const char* reason);
+
+/**
+ * 优雅关闭云客户端 (包含设备注销)
+ * @param reason 关闭原因
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_graceful_shutdown(const char* reason);
+
 #ifdef __cplusplus
 }
 #endif

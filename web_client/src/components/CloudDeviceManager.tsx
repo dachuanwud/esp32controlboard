@@ -13,6 +13,9 @@ const CloudDeviceManager: React.FC = () => {
     command: '',
     data: '{}'
   })
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deviceToDelete, setDeviceToDelete] = useState<CloudDevice | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
   // 获取云设备列表
   const fetchCloudDevices = async () => {
@@ -62,7 +65,7 @@ const CloudDeviceManager: React.FC = () => {
     try {
       setError(null)
       let commandData = {}
-      
+
       if (commandForm.data.trim()) {
         try {
           commandData = JSON.parse(commandForm.data)
@@ -79,6 +82,52 @@ const CloudDeviceManager: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送指令失败')
     }
+  }
+
+  // 开始删除设备
+  const handleDeleteDevice = (device: CloudDevice) => {
+    setDeviceToDelete(device)
+    setDeleteConfirmText('')
+    setShowDeleteModal(true)
+  }
+
+  // 确认删除设备
+  const handleConfirmDelete = async () => {
+    if (!deviceToDelete) return
+
+    // 验证确认文本
+    if (deleteConfirmText !== deviceToDelete.device_name) {
+      setError('请输入正确的设备名称以确认删除')
+      return
+    }
+
+    try {
+      setError(null)
+      await cloudDeviceAPI.deleteDevice(deviceToDelete.device_id)
+      setSuccess(`设备 "${deviceToDelete.device_name}" 已成功删除`)
+
+      // 如果删除的是当前选中的设备，清除选择
+      if (selectedDevice?.device_id === deviceToDelete.device_id) {
+        setSelectedDevice(null)
+      }
+
+      // 刷新设备列表
+      await fetchCloudDevices()
+
+      // 关闭删除对话框
+      setShowDeleteModal(false)
+      setDeviceToDelete(null)
+      setDeleteConfirmText('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除设备失败')
+    }
+  }
+
+  // 取消删除
+  const handleCancelDelete = () => {
+    setShowDeleteModal(false)
+    setDeviceToDelete(null)
+    setDeleteConfirmText('')
   }
 
   // 格式化时间
@@ -271,6 +320,14 @@ const CloudDeviceManager: React.FC = () => {
                     >
                       {selectedDevice?.device_id === device.device_id ? "✅ 已选中" : "🎯 选择"}
                     </Button>
+                    <Button
+                      variant="outline-danger"
+                      size="sm"
+                      onClick={() => handleDeleteDevice(device)}
+                      className="btn-custom"
+                    >
+                      🗑️ 删除
+                    </Button>
                   </div>
                 </ListGroup.Item>
               ))}
@@ -327,6 +384,60 @@ const CloudDeviceManager: React.FC = () => {
             disabled={!commandForm.command.trim()}
           >
             📤 发送指令
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* 删除设备确认对话框 */}
+      <Modal show={showDeleteModal} onHide={handleCancelDelete}>
+        <Modal.Header closeButton>
+          <Modal.Title>🗑️ 删除设备确认</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {deviceToDelete && (
+            <>
+              <Alert variant="danger">
+                <Alert.Heading>⚠️ 危险操作</Alert.Heading>
+                <p>您即将删除设备 <strong>{deviceToDelete.device_name}</strong>。</p>
+                <p>此操作将：</p>
+                <ul>
+                  <li>从云服务器中永久删除设备记录</li>
+                  <li>删除所有相关的状态历史数据</li>
+                  <li>删除所有相关的指令记录</li>
+                  <li>此操作<strong>不可撤销</strong></li>
+                </ul>
+              </Alert>
+
+              <Form>
+                <Form.Group className="mb-3">
+                  <Form.Label>
+                    请输入设备名称 <code>{deviceToDelete.device_name}</code> 以确认删除：
+                  </Form.Label>
+                  <Form.Control
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={deviceToDelete.device_name}
+                    autoComplete="off"
+                  />
+                  <Form.Text className="text-muted">
+                    输入完全匹配的设备名称才能执行删除操作
+                  </Form.Text>
+                </Form.Group>
+              </Form>
+            </>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleCancelDelete}>
+            取消
+          </Button>
+          <Button
+            variant="danger"
+            onClick={handleConfirmDelete}
+            disabled={!deviceToDelete || deleteConfirmText !== deviceToDelete.device_name}
+          >
+            🗑️ 确认删除
           </Button>
         </Modal.Footer>
       </Modal>

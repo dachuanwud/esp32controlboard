@@ -1,8 +1,38 @@
 {
+  "name": "esp32-unified-server",
+  "version": "2.0.0",
+  "description": "ESP32控制板统一服务器架构",
+  "main": "unified-server.js",
+  "scripts": {
+    "start": "node unified-server.js",
+    "dev": "nodemon unified-server.js",
+    "test": "jest",
+    "lint": "eslint .",
+    "legacy:server": "node legacy/server.js.backup",
+    "legacy:supabase": "node legacy/supabase-server.js.backup"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.9",
     "axios": "^1.9.0",
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0",
+    "eslint": "^8.55.0"
+  },
+  "keywords": [
+    "esp32",
+    "iot",
+    "supabase",
+    "proxy",
+    "unified-server"
+  ],
+  "author": "ESP32 Control Board Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
