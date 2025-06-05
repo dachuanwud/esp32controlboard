@@ -4,7 +4,7 @@ const path = require('path');
 const { deviceService } = require('./supabase-config');
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 
 // CORS配置
 app.use(cors({
