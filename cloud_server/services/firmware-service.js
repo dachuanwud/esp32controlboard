@@ -5,13 +5,12 @@ const crypto = require('crypto');
 const multer = require('multer');
 const axios = require('axios');
 const logger = require('../utils/logger');
-const { createClient } = require('@supabase/supabase-js');
 
-// Supabase配置
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://hfmifzmuwcmtgyjfhxvx.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbWlmem11d2NtdGd5amZoeHZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzM0NzE5NzQsImV4cCI6MjA0OTA0Nzk3NH0.Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8';
 
-const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// 使用统一的Supabase配置
+const { supabaseAdmin } = require('../supabase-config');
+
+const supabaseClient = supabaseAdmin;
 
 // 固件存储目录
 const FIRMWARE_DIR = path.join(__dirname, '../firmware');
