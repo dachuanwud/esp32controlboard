@@ -9,11 +9,15 @@
 #include "freertos/timers.h"
 #include "esp_mac.h"
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "CLOUD_CLIENT";
 
+// 函数声明
+static void set_last_error(const char* error_msg);
+
 // 全局变量
-static device_info_t s_device_info = {0};
+static cloud_device_info_t s_device_info = {0};
 static bool s_client_running = false;
 static bool s_client_connected = false;
 static TaskHandle_t s_status_task_handle = NULL;
@@ -162,12 +166,12 @@ static void status_task(void *pvParameters)
 
     while (s_client_running) {
         if (wifi_manager_is_connected()) {
-            ESP_LOGD(TAG, "🔄 开始第%d次状态收集...", report_count + 1);
+            ESP_LOGD(TAG, "🔄 开始第%" PRIu32 "次状态收集...", report_count + 1);
 
             // 收集设备状态
             esp_err_t ret = collect_current_status(&status_data);
             if (ret == ESP_OK) {
-                ESP_LOGD(TAG, "📊 状态数据收集成功 - 堆内存: %d, 运行时间: %ds, WiFi: %s",
+                ESP_LOGD(TAG, "📊 状态数据收集成功 - 堆内存: %" PRIu32 ", 运行时间: %" PRIu32 "s, WiFi: %s",
                          status_data.free_heap,
                          status_data.uptime_seconds,
                          status_data.wifi_connected ? "已连接" : "未连接");
@@ -182,7 +186,7 @@ static void status_task(void *pvParameters)
                     s_retry_count = 0;
                     success_count++;
 
-                    ESP_LOGI(TAG, "✅ 状态上报成功 [%d/%d] - 成功率: %.1f%%",
+                    ESP_LOGI(TAG, "✅ 状态上报成功 [%" PRIu32 "/%" PRIu32 "] - 成功率: %.1f%%",
                              success_count, report_count + 1,
                              (float)success_count / (report_count + 1) * 100);
                 } else {
@@ -190,13 +194,13 @@ static void status_task(void *pvParameters)
                     s_device_info.network_status = NETWORK_ERROR;
                     error_count++;
 
-                    ESP_LOGW(TAG, "⚠️ 状态上报失败 [%d/%d]: %s",
+                    ESP_LOGW(TAG, "⚠️ 状态上报失败 [%" PRIu32 "/%" PRIu32 "]: %s",
                              error_count, report_count + 1,
                              cloud_client_get_last_error());
 
                     // 尝试重连
                     if (s_retry_count < MAX_RETRY_ATTEMPTS) {
-                        ESP_LOGI(TAG, "🔄 尝试重连 (第%d次)...", s_retry_count + 1);
+                        ESP_LOGI(TAG, "🔄 尝试重连 (第%" PRIu32 "次)...", s_retry_count + 1);
                         cloud_client_reconnect();
                     } else {
                         ESP_LOGE(TAG, "❌ 达到最大重试次数，暂停重连");
@@ -220,8 +224,8 @@ static void status_task(void *pvParameters)
     }
 
     ESP_LOGI(TAG, "📊 状态上报任务已停止");
-    ESP_LOGI(TAG, "📈 统计信息 - 总计: %d, 成功: %d, 失败: %d",
-             report_count, success_count, error_count);
+    ESP_LOGI(TAG, "📈 统计信息 - 总计: %lu, 成功: %lu, 失败: %lu",
+             (unsigned long)report_count, (unsigned long)success_count, (unsigned long)error_count);
 
     s_status_task_handle = NULL;
     vTaskDelete(NULL);
@@ -263,8 +267,8 @@ esp_err_t cloud_client_init(void)
     ESP_LOGI(TAG, "🆔 生成设备ID: %s", s_device_info.device_id);
 
     // 设置默认设备信息
-    snprintf(s_device_info.device_name, sizeof(s_device_info.device_name), "ESP32控制板-%s",
-             s_device_info.device_id + 6); // 跳过"esp32-"前缀
+    snprintf(s_device_info.device_name, sizeof(s_device_info.device_name), "ESP32控制板-%.8s",
+             s_device_info.device_id + 6); // 跳过"esp32-"前缀，限制长度
     strcpy(s_device_info.device_type, "ESP32");
     strcpy(s_device_info.firmware_version, "2.1.0");
     strcpy(s_device_info.hardware_version, "v2.1");
@@ -598,7 +602,7 @@ bool cloud_client_is_connected(void)
 /**
  * 获取设备信息
  */
-const device_info_t* cloud_client_get_device_info(void)
+const cloud_device_info_t* cloud_client_get_device_info(void)
 {
     return &s_device_info;
 }
@@ -708,9 +712,9 @@ esp_err_t cloud_client_send_device_status(const device_status_data_t* status_dat
     cJSON_AddNumberToObject(json, "last_sbus_time", status_data->last_sbus_time);
     cJSON_AddNumberToObject(json, "last_cmd_time", status_data->last_cmd_time);
 
-    ESP_LOGD(TAG, "📊 状态数据摘要 - 堆内存: %d/%d, 运行时间: %ds, 任务数: %d",
-             status_data->free_heap, status_data->total_heap,
-             status_data->uptime_seconds, status_data->task_count);
+    ESP_LOGD(TAG, "📊 状态数据摘要 - 堆内存: %lu/%lu, 运行时间: %lus, 任务数: %d",
+             (unsigned long)status_data->free_heap, (unsigned long)status_data->total_heap,
+             (unsigned long)status_data->uptime_seconds, status_data->task_count);
 
     // 添加SBUS通道数组
     cJSON *channels = cJSON_CreateArray();
@@ -856,7 +860,7 @@ esp_err_t cloud_client_reconnect(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    ESP_LOGI(TAG, "🔄 执行网络重连 (第%d次)", s_retry_count);
+    ESP_LOGI(TAG, "🔄 执行网络重连 (第%" PRIu32 "次)", s_retry_count);
 
     // 重新注册设备
     esp_err_t ret = cloud_client_register_device(
@@ -896,7 +900,7 @@ void cloud_client_set_status_callback(void (*callback)(const device_status_data_
 /**
  * 增强的设备注册函数（支持更多设备信息）
  */
-static esp_err_t register_device_enhanced(void)
+__attribute__((unused)) static esp_err_t register_device_enhanced(void)
 {
     if (!wifi_manager_is_connected()) {
         set_last_error("Wi-Fi未连接");

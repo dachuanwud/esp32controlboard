@@ -2,9 +2,11 @@
 #include "wifi_manager.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "DATA_INTEGRATION";
 
@@ -68,7 +70,7 @@ esp_err_t data_integration_collect_status(device_status_data_t* status)
     status->task_count = uxTaskGetNumberOfTasks();
     status->timestamp = status->uptime_seconds;
 
-    ESP_LOGD(TAG, "💾 系统信息 - 堆内存: %d/%d, 运行时间: %ds, 任务数: %d",
+    ESP_LOGD(TAG, "💾 系统信息 - 堆内存: %" PRIu32 "/%" PRIu32 ", 运行时间: %" PRIu32 "s, 任务数: %d",
              status->free_heap, status->total_heap, status->uptime_seconds, status->task_count);
 
     // Wi-Fi状态
@@ -100,7 +102,7 @@ esp_err_t data_integration_collect_status(device_status_data_t* status)
                 for (int i = 0; i < 16; i++) {
                     status->sbus_channels[i] = channels[i];
                 }
-                ESP_LOGD(TAG, "🎮 SBUS已连接，最后更新: %d", status->last_sbus_time);
+                ESP_LOGD(TAG, "🎮 SBUS已连接，最后更新: %" PRIu32, status->last_sbus_time);
                 ESP_LOGD(TAG, "📊 SBUS通道示例 - CH1: %d, CH2: %d, CH3: %d, CH4: %d",
                          channels[0], channels[1], channels[2], channels[3]);
             } else {
@@ -124,7 +126,7 @@ esp_err_t data_integration_collect_status(device_status_data_t* status)
     if (s_get_motor_status) {
         esp_err_t ret = s_get_motor_status(&status->motor_left_speed, &status->motor_right_speed, &status->last_cmd_time);
         if (ret == ESP_OK) {
-            ESP_LOGD(TAG, "🚗 电机状态 - 左: %d, 右: %d, 最后更新: %d",
+            ESP_LOGD(TAG, "🚗 电机状态 - 左: %d, 右: %d, 最后更新: %" PRIu32,
                      status->motor_left_speed, status->motor_right_speed, status->last_cmd_time);
         } else {
             ESP_LOGW(TAG, "⚠️ 获取电机状态失败");
@@ -141,7 +143,7 @@ esp_err_t data_integration_collect_status(device_status_data_t* status)
     if (s_get_can_status) {
         esp_err_t ret = s_get_can_status(&status->can_connected, &status->can_tx_count, &status->can_rx_count);
         if (ret == ESP_OK) {
-            ESP_LOGD(TAG, "🚌 CAN状态 - 连接: %s, TX: %d, RX: %d",
+            ESP_LOGD(TAG, "🚌 CAN状态 - 连接: %s, TX: %" PRIu32 ", RX: %" PRIu32,
                      status->can_connected ? "是" : "否",
                      status->can_tx_count, status->can_rx_count);
         } else {
@@ -155,7 +157,7 @@ esp_err_t data_integration_collect_status(device_status_data_t* status)
     }
 
     ESP_LOGI(TAG, "✅ 设备状态收集完成");
-    ESP_LOGI(TAG, "📊 状态摘要 - 堆内存: %d, 运行时间: %ds, WiFi: %s, SBUS: %s, CAN: %s",
+    ESP_LOGI(TAG, "📊 状态摘要 - 堆内存: %" PRIu32 ", 运行时间: %" PRIu32 "s, WiFi: %s, SBUS: %s, CAN: %s",
              status->free_heap, status->uptime_seconds,
              status->wifi_connected ? "✅" : "❌",
              status->sbus_connected ? "✅" : "❌",

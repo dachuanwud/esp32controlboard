@@ -32,7 +32,7 @@ static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t status_task_handle = NULL;
 static TaskHandle_t wifi_task_handle = NULL;
 static TaskHandle_t http_task_handle = NULL;
-static TaskHandle_t cloud_task_handle = NULL;
+// static TaskHandle_t cloud_task_handle = NULL;  // 未使用，已注释
 
 // Wi-Fi配置 - 可以通过Web界面或硬编码配置
 #define DEFAULT_WIFI_SSID     "WangCun"
@@ -118,8 +118,8 @@ static esp_err_t data_integration_get_sbus_status_callback(bool* connected, uint
 
     *last_time = g_last_sbus_update;
 
-    ESP_LOGD(TAG, "🎮 SBUS状态回调 - 连接: %s, 数据年龄: %dms",
-             *connected ? "是" : "否", time_diff * portTICK_PERIOD_MS);
+    ESP_LOGD(TAG, "🎮 SBUS状态回调 - 连接: %s, 数据年龄: %lums",
+             *connected ? "是" : "否", (unsigned long)(time_diff * portTICK_PERIOD_MS));
 
     return ESP_OK;
 }
@@ -141,8 +141,8 @@ static esp_err_t data_integration_get_motor_status_callback(int* left_speed, int
     uint32_t current_time = xTaskGetTickCount();
     uint32_t time_diff = current_time - g_last_motor_update;
 
-    ESP_LOGD(TAG, "🚗 电机状态回调 - 左: %d, 右: %d, 数据年龄: %dms",
-             *left_speed, *right_speed, time_diff * portTICK_PERIOD_MS);
+    ESP_LOGD(TAG, "🚗 电机状态回调 - 左: %d, 右: %d, 数据年龄: %lums",
+             *left_speed, *right_speed, (unsigned long)(time_diff * portTICK_PERIOD_MS));
 
     return ESP_OK;
 }
@@ -162,8 +162,8 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
     *tx_count = 0;
     *rx_count = 0;
 
-    ESP_LOGD(TAG, "🚌 CAN状态回调 - 连接: %s, TX: %d, RX: %d",
-             *connected ? "是" : "否", *tx_count, *rx_count);
+    ESP_LOGD(TAG, "🚌 CAN状态回调 - 连接: %s, TX: %lu, RX: %lu",
+             *connected ? "是" : "否", (unsigned long)*tx_count, (unsigned long)*rx_count);
 
     return ESP_OK;
 }
@@ -409,7 +409,7 @@ static void wifi_management_task(void *pvParameters)
 
             // 注册设备到云服务器
             ESP_LOGI(TAG, "📡 注册设备到Supabase云服务器...");
-            const device_info_t* device_info = cloud_client_get_device_info();
+            const cloud_device_info_t* device_info = cloud_client_get_device_info();
             ESP_LOGI(TAG, "🆔 设备信息 - ID: %s, 名称: %s",
                      device_info->device_id, device_info->device_name);
 
