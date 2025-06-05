@@ -3,5 +3,8 @@ idf_component_register(SRCS "ota_manager.c" "http_server.c" "wifi_manager.c" "ma
                        "drv_keyadouble.c"
                        "sbus.c"
                        "cloud_client.c"
+                       "data_integration.c"
+                       "log_config.c"
+                       "time_manager.c"
                     INCLUDE_DIRS "."
-                    REQUIRES esp_wifi esp_http_server esp_https_ota app_update nvs_flash json spi_flash driver esp_http_client)
+                    REQUIRES esp_wifi esp_http_server esp_https_ota app_update nvs_flash json spi_flash driver esp_http_client esp_timer)

@@ -55,7 +55,7 @@ typedef enum {
     NETWORK_ERROR
 } network_status_t;
 
-// 设备信息结构体
+// 云设备信息结构体
 typedef struct {
     char device_id[64];
     char device_name[128];
@@ -68,7 +68,7 @@ typedef struct {
     network_status_t network_status;
     uint32_t last_seen;
     uint32_t retry_count;
-} device_info_t;
+} cloud_device_info_t;
 
 // 设备状态数据结构体（与Supabase兼容）
 typedef struct {
@@ -150,7 +150,7 @@ bool cloud_client_is_connected(void);
  * 获取设备信息
  * @return 设备信息指针
  */
-const device_info_t* cloud_client_get_device_info(void);
+const cloud_device_info_t* cloud_client_get_device_info(void);
 
 /**
  * 发送完整设备状态到Supabase

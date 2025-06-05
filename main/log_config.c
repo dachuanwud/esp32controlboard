@@ -4,7 +4,10 @@
 #include "esp_system.h"
 #include "esp_app_desc.h"
 #include "esp_mac.h"
+#include "esp_chip_info.h"
+#include "esp_timer.h"
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "LOG_CONFIG";
 
@@ -122,8 +125,8 @@ void print_system_info(void)
     ESP_LOGI(TAG, "║ 📶 蓝牙支持: %-45s ║", (chip_info.features & CHIP_FEATURE_BT) ? "是" : "否");
     
     // 内存信息
-    ESP_LOGI(TAG, "║ 💾 可用堆内存: %-41d ║", esp_get_free_heap_size());
-    ESP_LOGI(TAG, "║ 💾 最小堆内存: %-41d ║", esp_get_minimum_free_heap_size());
+    ESP_LOGI(TAG, "║ 💾 可用堆内存: %-41" PRIu32 " ║", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "║ 💾 最小堆内存: %-41" PRIu32 " ║", esp_get_minimum_free_heap_size());
     
     // MAC地址
     uint8_t mac[6];
@@ -161,7 +164,7 @@ void print_network_status(void)
         wifi_status_t wifi_status;
         if (wifi_manager_get_status(&wifi_status) == ESP_OK) {
             ESP_LOGI(TAG, "║ 📶 信号强度: %-43d dBm ║", wifi_status.rssi);
-            ESP_LOGI(TAG, "║ 🔗 SSID: %-49s ║", wifi_status.ssid);
+            ESP_LOGI(TAG, "║ ⏰ 连接时间: %-44" PRIu32 "ms ║", wifi_status.connect_time);
         }
     }
     
@@ -179,7 +182,7 @@ void print_cloud_status(void)
     ESP_LOGI(TAG, "║                        云服务状态信息                         ║");
     ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
     
-    const device_info_t* device_info = cloud_client_get_device_info();
+    const cloud_device_info_t* device_info = cloud_client_get_device_info();
     if (device_info) {
         ESP_LOGI(TAG, "║ 🆔 设备ID: %-47s ║", device_info->device_id);
         ESP_LOGI(TAG, "║ 📋 设备名称: %-45s ║", device_info->device_name);
@@ -206,7 +209,7 @@ void print_cloud_status(void)
         ESP_LOGI(TAG, "║ 🌐 网络状态: %-45s ║", net_status_str);
         
         if (device_info->last_seen > 0) {
-            ESP_LOGI(TAG, "║ ⏰ 最后上报: %-44d秒前 ║", device_info->last_seen);
+            ESP_LOGI(TAG, "║ ⏰ 最后上报: %-44" PRIu32 "秒前 ║", device_info->last_seen);
         }
     }
     
