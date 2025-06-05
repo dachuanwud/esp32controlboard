@@ -21,6 +21,7 @@
 #define API_OTA_START           "/api/ota/start"
 #define API_OTA_PROGRESS        "/api/ota/progress"
 #define API_OTA_ROLLBACK        "/api/ota/rollback"
+#define API_OTA_INFO            "/api/ota/info"
 #define API_WIFI_SCAN           "/api/wifi/scan"
 #define API_WIFI_CONNECT        "/api/wifi/connect"
 #define API_WIFI_STATUS         "/api/wifi/status"

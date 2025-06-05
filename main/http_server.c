@@ -337,6 +337,161 @@ static esp_err_t ota_progress_handler(httpd_req_t *req)
 }
 
 /**
+ * OTA开始处理函数
+ */
+static esp_err_t ota_start_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "🚀 OTA start request received");
+
+    // 解析请求体
+    char *buffer = malloc(req->content_len + 1);
+    if (buffer == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int ret = httpd_req_recv(req, buffer, req->content_len);
+    if (ret <= 0) {
+        free(buffer);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buffer[req->content_len] = '\0';
+
+    // 解析JSON
+    cJSON *json = cJSON_Parse(buffer);
+    free(buffer);
+
+    if (json == NULL) {
+        cJSON *error_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(error_json, "status", "error");
+        cJSON_AddStringToObject(error_json, "message", "Invalid JSON format");
+        esp_err_t send_ret = send_json_response(req, error_json, 400);
+        cJSON_Delete(error_json);
+        return send_ret;
+    }
+
+    // 获取固件大小
+    cJSON *size_item = cJSON_GetObjectItem(json, "firmware_size");
+    if (!cJSON_IsNumber(size_item)) {
+        cJSON_Delete(json);
+        cJSON *error_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(error_json, "status", "error");
+        cJSON_AddStringToObject(error_json, "message", "Missing or invalid firmware_size");
+        esp_err_t send_ret = send_json_response(req, error_json, 400);
+        cJSON_Delete(error_json);
+        return send_ret;
+    }
+
+    uint32_t firmware_size = (uint32_t)cJSON_GetNumberValue(size_item);
+    cJSON_Delete(json);
+
+    // 开始OTA更新
+    esp_err_t ota_ret = ota_manager_begin(firmware_size);
+
+    cJSON *response_json = cJSON_CreateObject();
+    if (ota_ret == ESP_OK) {
+        cJSON_AddStringToObject(response_json, "status", "success");
+        cJSON_AddStringToObject(response_json, "message", "OTA update started");
+        ESP_LOGI(TAG, "✅ OTA update started, firmware size: %lu bytes", (unsigned long)firmware_size);
+    } else {
+        cJSON_AddStringToObject(response_json, "status", "error");
+        cJSON_AddStringToObject(response_json, "message", "Failed to start OTA update");
+        ESP_LOGE(TAG, "❌ Failed to start OTA update: %s", esp_err_to_name(ota_ret));
+    }
+
+    esp_err_t send_ret = send_json_response(req, response_json, ota_ret == ESP_OK ? 200 : 400);
+    cJSON_Delete(response_json);
+    return send_ret;
+}
+
+/**
+ * OTA回滚处理函数
+ */
+static esp_err_t ota_rollback_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "🔄 OTA rollback request received");
+
+    // 执行回滚操作
+    esp_err_t rollback_ret = ota_manager_rollback();
+
+    cJSON *json = cJSON_CreateObject();
+    if (rollback_ret == ESP_OK) {
+        cJSON_AddStringToObject(json, "status", "success");
+        cJSON_AddStringToObject(json, "message", "Rollback initiated, system will restart");
+        ESP_LOGI(TAG, "✅ OTA rollback initiated");
+    } else {
+        cJSON_AddStringToObject(json, "status", "error");
+        cJSON_AddStringToObject(json, "message", "Failed to initiate rollback");
+        ESP_LOGE(TAG, "❌ Failed to initiate rollback: %s", esp_err_to_name(rollback_ret));
+    }
+
+    esp_err_t ret = send_json_response(req, json, rollback_ret == ESP_OK ? 200 : 400);
+    cJSON_Delete(json);
+
+    // 如果回滚成功，系统会重启，这里的代码不会执行
+    return ret;
+}
+
+/**
+ * OTA信息查询处理函数
+ */
+static esp_err_t ota_info_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "📋 OTA info request received");
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateObject();
+
+    // 获取当前运行分区信息
+    const esp_partition_t* running_partition = ota_manager_get_running_partition();
+    if (running_partition) {
+        cJSON_AddStringToObject(data, "running_partition", running_partition->label);
+        cJSON_AddNumberToObject(data, "running_partition_size", running_partition->size);
+        cJSON_AddNumberToObject(data, "running_partition_address", running_partition->address);
+    }
+
+    // 获取下一个OTA分区信息
+    const esp_partition_t* next_partition = ota_manager_get_next_partition();
+    if (next_partition) {
+        cJSON_AddStringToObject(data, "next_partition", next_partition->label);
+        cJSON_AddNumberToObject(data, "next_partition_size", next_partition->size);
+        cJSON_AddNumberToObject(data, "next_partition_address", next_partition->address);
+    }
+
+    // 获取固件版本信息
+    char version_buffer[64];
+    if (ota_manager_get_version(version_buffer, sizeof(version_buffer)) == ESP_OK) {
+        cJSON_AddStringToObject(data, "firmware_version", version_buffer);
+    }
+
+    // 检查是否需要回滚
+    cJSON_AddBoolToObject(data, "rollback_required", ota_manager_check_rollback_required());
+
+    // 获取分区表信息
+    esp_partition_t partition_info[8];
+    uint8_t partition_count = ota_manager_get_partition_info(partition_info, 8);
+    cJSON *partitions = cJSON_CreateArray();
+    for (uint8_t i = 0; i < partition_count; i++) {
+        cJSON *partition = cJSON_CreateObject();
+        cJSON_AddStringToObject(partition, "label", partition_info[i].label);
+        cJSON_AddNumberToObject(partition, "type", partition_info[i].type);
+        cJSON_AddNumberToObject(partition, "subtype", partition_info[i].subtype);
+        cJSON_AddNumberToObject(partition, "address", partition_info[i].address);
+        cJSON_AddNumberToObject(partition, "size", partition_info[i].size);
+        cJSON_AddItemToArray(partitions, partition);
+    }
+    cJSON_AddItemToObject(data, "partitions", partitions);
+
+    cJSON_AddStringToObject(json, "status", "success");
+    cJSON_AddItemToObject(json, "data", data);
+
+    esp_err_t ret = send_json_response(req, json, 200);
+    cJSON_Delete(json);
+    return ret;
+}
+
+/**
  * Wi-Fi状态查询处理函数
  */
 static esp_err_t wifi_status_handler(httpd_req_t *req)
@@ -533,6 +688,33 @@ static esp_err_t register_handlers(httpd_handle_t server)
     };
     httpd_register_uri_handler(server, &ota_progress_uri);
 
+    // OTA开始API
+    httpd_uri_t ota_start_uri = {
+        .uri = API_OTA_START,
+        .method = HTTP_POST,
+        .handler = ota_start_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &ota_start_uri);
+
+    // OTA回滚API
+    httpd_uri_t ota_rollback_uri = {
+        .uri = API_OTA_ROLLBACK,
+        .method = HTTP_POST,
+        .handler = ota_rollback_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &ota_rollback_uri);
+
+    // OTA信息API
+    httpd_uri_t ota_info_uri = {
+        .uri = API_OTA_INFO,
+        .method = HTTP_GET,
+        .handler = ota_info_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &ota_info_uri);
+
     // Wi-Fi状态API
     httpd_uri_t wifi_status_uri = {
         .uri = API_WIFI_STATUS,
@@ -587,7 +769,7 @@ esp_err_t http_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 13;  // 增加到13个以支持所有OTA接口
     config.max_resp_headers = 8;
     config.stack_size = 8192;
 
