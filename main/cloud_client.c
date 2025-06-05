@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "esp_mac.h"
+#include "ota_manager.h"
 #include <string.h>
 #include <inttypes.h>
 
@@ -15,6 +16,9 @@ static const char *TAG = "CLOUD_CLIENT";
 
 // 函数声明
 static void set_last_error(const char* error_msg);
+static cloud_command_type_t parse_command_type(const char* command_str);
+static esp_err_t handle_ota_command(const cJSON* data);
+static esp_err_t download_and_install_firmware(const char* url, uint32_t expected_size);
 
 // 全局变量
 static cloud_device_info_t s_device_info = {0};
@@ -526,6 +530,198 @@ esp_err_t cloud_client_send_status(cloud_status_t status, const char* data)
 }
 
 /**
+ * 解析指令类型字符串
+ */
+static cloud_command_type_t parse_command_type(const char* command_str)
+{
+    if (!command_str) {
+        return CLOUD_CMD_UNKNOWN;
+    }
+
+    if (strcmp(command_str, "sbus_update") == 0) {
+        return CLOUD_CMD_SBUS_UPDATE;
+    } else if (strcmp(command_str, "motor_control") == 0) {
+        return CLOUD_CMD_MOTOR_CONTROL;
+    } else if (strcmp(command_str, "wifi_config") == 0) {
+        return CLOUD_CMD_WIFI_CONFIG;
+    } else if (strcmp(command_str, "ota_update") == 0) {
+        return CLOUD_CMD_OTA_UPDATE;
+    } else if (strcmp(command_str, "reboot") == 0) {
+        return CLOUD_CMD_REBOOT;
+    }
+
+    return CLOUD_CMD_UNKNOWN;
+}
+
+/**
+ * 处理OTA升级指令
+ */
+static esp_err_t handle_ota_command(const cJSON* data)
+{
+    ESP_LOGI(TAG, "🚀 处理OTA升级指令");
+
+    if (!data) {
+        ESP_LOGE(TAG, "❌ OTA指令数据为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // 解析OTA参数
+    cJSON *firmware_url = cJSON_GetObjectItem(data, "firmware_url");
+    cJSON *firmware_size = cJSON_GetObjectItem(data, "firmware_size");
+    cJSON *firmware_version = cJSON_GetObjectItem(data, "firmware_version");
+
+    if (!firmware_url || !cJSON_IsString(firmware_url)) {
+        ESP_LOGE(TAG, "❌ 固件URL无效");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char* url = cJSON_GetStringValue(firmware_url);
+    uint32_t size = firmware_size ? (uint32_t)cJSON_GetNumberValue(firmware_size) : 0;
+    const char* version = firmware_version ? cJSON_GetStringValue(firmware_version) : "unknown";
+
+    ESP_LOGI(TAG, "📦 开始OTA升级:");
+    ESP_LOGI(TAG, "   固件URL: %s", url);
+    ESP_LOGI(TAG, "   固件大小: %lu bytes", (unsigned long)size);
+    ESP_LOGI(TAG, "   固件版本: %s", version);
+
+    // 下载并安装固件
+    esp_err_t ret = download_and_install_firmware(url, size);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ OTA升级失败: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "✅ OTA升级成功，准备重启");
+    return ESP_OK;
+}
+
+/**
+ * 从URL下载并安装固件
+ */
+static esp_err_t download_and_install_firmware(const char* url, uint32_t expected_size)
+{
+    ESP_LOGI(TAG, "📥 开始从URL下载固件: %s", url);
+
+    // 创建HTTP客户端
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 30000,
+        .buffer_size = 4096,
+        .buffer_size_tx = 1024
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "❌ 创建HTTP客户端失败");
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = ESP_OK;
+    int content_length = 0;
+    bool ota_started = false;
+
+    // 发送HTTP请求
+    ret = esp_http_client_open(client, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ HTTP连接失败: %s", esp_err_to_name(ret));
+        goto cleanup;
+    }
+
+    // 获取内容长度
+    content_length = esp_http_client_fetch_headers(client);
+    if (content_length <= 0) {
+        ESP_LOGE(TAG, "❌ 无效的内容长度: %d", content_length);
+        ret = ESP_FAIL;
+        goto cleanup;
+    }
+
+    ESP_LOGI(TAG, "📏 固件大小: %d bytes", content_length);
+
+    // 验证文件大小
+    if (expected_size > 0 && (uint32_t)content_length != expected_size) {
+        ESP_LOGW(TAG, "⚠️ 固件大小不匹配: 期望 %lu, 实际 %d",
+                (unsigned long)expected_size, content_length);
+    }
+
+    // 开始OTA更新
+    ret = ota_manager_begin((uint32_t)content_length);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ 开始OTA更新失败: %s", esp_err_to_name(ret));
+        goto cleanup;
+    }
+    ota_started = true;
+
+    // 下载并写入固件数据
+    char *buffer = malloc(4096);
+    if (!buffer) {
+        ESP_LOGE(TAG, "❌ 分配下载缓冲区失败");
+        ret = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    int total_read = 0;
+    while (total_read < content_length) {
+        int data_read = esp_http_client_read(client, buffer, 4096);
+        if (data_read < 0) {
+            ESP_LOGE(TAG, "❌ 读取固件数据失败");
+            ret = ESP_FAIL;
+            break;
+        }
+
+        if (data_read == 0) {
+            ESP_LOGW(TAG, "⚠️ 数据读取完成");
+            break;
+        }
+
+        // 写入OTA数据
+        ret = ota_manager_write(buffer, data_read);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "❌ 写入OTA数据失败: %s", esp_err_to_name(ret));
+            break;
+        }
+
+        total_read += data_read;
+
+        // 每64KB打印一次进度
+        if (total_read % (64 * 1024) == 0 || total_read == content_length) {
+            ESP_LOGI(TAG, "📥 下载进度: %d/%d bytes (%.1f%%)",
+                    total_read, content_length,
+                    (float)total_read * 100.0f / content_length);
+        }
+    }
+
+    free(buffer);
+
+    if (ret == ESP_OK && total_read == content_length) {
+        // 完成OTA更新
+        ret = ota_manager_end();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "✅ 固件下载和安装成功");
+            ESP_LOGI(TAG, "🔄 系统将在3秒后重启以应用新固件");
+
+            // 延迟重启，让日志输出完成
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "❌ 完成OTA更新失败: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGE(TAG, "❌ 固件下载不完整: %d/%d bytes", total_read, content_length);
+        ret = ESP_FAIL;
+    }
+
+cleanup:
+    if (ota_started && ret != ESP_OK) {
+        ESP_LOGW(TAG, "🧹 中止OTA更新");
+        ota_manager_abort();
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ret;
+}
+
+/**
  * 从云服务器获取指令
  */
 int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
@@ -561,18 +757,34 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
 
         if (id_obj && command_obj) {
             commands[count].id = (uint32_t)cJSON_GetNumberValue(id_obj);
-            commands[count].command = CLOUD_CMD_UNKNOWN; // 需要解析command字符串
 
+            // 解析指令类型
+            const char* cmd_str = cJSON_GetStringValue(command_obj);
+            commands[count].command = parse_command_type(cmd_str);
+
+            // 处理指令数据
             if (data_obj) {
                 char *data_str = cJSON_Print(data_obj);
                 if (data_str) {
                     strncpy(commands[count].data, data_str, sizeof(commands[count].data) - 1);
+                    commands[count].data[sizeof(commands[count].data) - 1] = '\0';
                     free(data_str);
                 }
             }
 
             if (timestamp_obj) {
                 commands[count].timestamp = (uint32_t)cJSON_GetNumberValue(timestamp_obj);
+            }
+
+            // 立即处理OTA指令
+            if (commands[count].command == CLOUD_CMD_OTA_UPDATE) {
+                ESP_LOGI(TAG, "🚀 收到OTA升级指令，立即处理");
+                esp_err_t ota_ret = handle_ota_command(data_obj);
+                if (ota_ret != ESP_OK) {
+                    ESP_LOGE(TAG, "❌ OTA升级处理失败");
+                }
+                // OTA指令不返回给调用者，因为它会导致重启
+                continue;
             }
 
             count++;

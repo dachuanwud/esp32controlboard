@@ -100,15 +100,7 @@ export interface DeviceStatus {
   can_rx_count: number
 }
 
-export interface OTAProgress {
-  in_progress: boolean
-  total_size: number
-  written_size: number
-  progress_percent: number
-  status_message: string
-  success: boolean
-  error_message?: string
-}
+
 
 export interface WiFiStatus {
   state: 'disconnected' | 'connecting' | 'connected' | 'failed'
@@ -145,46 +137,7 @@ export const deviceAPI = {
   },
 }
 
-export const otaAPI = {
-  // 上传固件
-  uploadFirmware: async (file: File, onProgress?: (progress: number) => void): Promise<void> => {
-    const formData = new FormData()
-    formData.append('firmware', file)
 
-    const response = await api.post<APIResponse<void>>('/ota/upload', file, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-      onUploadProgress: (progressEvent) => {
-        if (progressEvent.total && onProgress) {
-          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(progress)
-        }
-      },
-    })
-
-    if (response.data.status !== 'success') {
-      throw new Error(response.data.message || 'Failed to upload firmware')
-    }
-  },
-
-  // 获取OTA进度
-  getProgress: async (): Promise<OTAProgress> => {
-    const response = await api.get<APIResponse<OTAProgress>>('/ota/progress')
-    if (response.data.status === 'success' && response.data.data) {
-      return response.data.data
-    }
-    throw new Error(response.data.message || 'Failed to get OTA progress')
-  },
-
-  // 回滚固件
-  rollback: async (): Promise<void> => {
-    const response = await api.post<APIResponse<void>>('/ota/rollback')
-    if (response.data.status !== 'success') {
-      throw new Error(response.data.message || 'Failed to rollback firmware')
-    }
-  },
-}
 
 export const wifiAPI = {
   // 获取Wi-Fi状态
@@ -265,6 +218,85 @@ export interface DeviceCommand {
 }
 
 // 云服务器设备管理API (基于Supabase)
+// OTA固件管理API
+export const otaAPI = {
+  // 上传固件到云端
+  uploadFirmware: async (
+    file: File,
+    metadata: { version: string; description: string; deviceType: string },
+    onProgress?: (progress: number) => void
+  ): Promise<void> => {
+    const formData = new FormData()
+    formData.append('firmware', file)
+    formData.append('version', metadata.version)
+    formData.append('description', metadata.description)
+    formData.append('deviceType', metadata.deviceType)
+
+    const response = await axios.post('/api/firmware/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (progressEvent.total && onProgress) {
+          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(progress)
+        }
+      },
+    })
+
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to upload firmware')
+    }
+  },
+
+  // 获取固件列表
+  getFirmwareList: async (): Promise<{ firmware: any[]; count: number }> => {
+    const response = await axios.get('/api/firmware/list')
+    if (response.data.status === 'success') {
+      return response.data
+    }
+    throw new Error(response.data.message || 'Failed to get firmware list')
+  },
+
+  // 删除固件
+  deleteFirmware: async (firmwareId: string): Promise<void> => {
+    const response = await axios.delete(`/api/firmware/${firmwareId}`)
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to delete firmware')
+    }
+  },
+
+  // 部署固件到设备
+  deployFirmware: async (deploymentData: {
+    firmwareId: string
+    deviceIds: string[]
+    deploymentName?: string
+  }): Promise<void> => {
+    const response = await axios.post('/api/firmware/deploy', deploymentData)
+    if (response.data.status !== 'success') {
+      throw new Error(response.data.message || 'Failed to deploy firmware')
+    }
+  },
+
+  // 获取部署状态
+  getDeploymentStatus: async (deploymentId: string): Promise<any> => {
+    const response = await axios.get(`/api/firmware/deployment-status/${deploymentId}`)
+    if (response.data.status === 'success') {
+      return response.data.deployment
+    }
+    throw new Error(response.data.message || 'Failed to get deployment status')
+  },
+
+  // 获取部署历史
+  getDeploymentHistory: async (): Promise<{ deployments: any[] }> => {
+    const response = await axios.get('/api/firmware/deployments')
+    if (response.data.status === 'success') {
+      return response.data
+    }
+    throw new Error(response.data.message || 'Failed to get deployment history')
+  },
+}
+
 export const cloudDeviceAPI = {
   // 获取云服务器注册的设备列表
   getRegisteredDevices: async (): Promise<CloudDevice[]> => {

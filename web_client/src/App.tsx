@@ -4,11 +4,12 @@ import { Container, Navbar, Nav, Dropdown, Button } from 'react-bootstrap'
 import { DeviceProvider, useDevice } from './contexts/DeviceContext'
 import DeviceInfo from './components/DeviceInfo'
 import DeviceStatus from './components/DeviceStatus'
-import OTAUpdate from './components/OTAUpdate'
+
 import WiFiSettings from './components/WiFiSettings'
 import DeviceManager from './components/DeviceManager'
 import CloudDeviceManager from './components/CloudDeviceManager'
 import CloudDeviceStatus from './components/CloudDeviceStatus'
+import OTAManager from './components/OTAManager'
 
 // 主应用内容组件
 const AppContent: React.FC = () => {
@@ -30,10 +31,11 @@ const AppContent: React.FC = () => {
     switch (pathname) {
       case '/': return '📊 设备信息'
       case '/status': return '📈 实时状态'
-      case '/ota': return '🔄 OTA更新'
+
       case '/wifi': return '📶 Wi-Fi设置'
       case '/devices': return '☁️ 云设备管理'
       case '/cloud-status': return '📈 云设备状态'
+      case '/ota': return '🚀 OTA固件管理'
       default: return '🎛️ ESP32控制板'
     }
   }
@@ -119,13 +121,7 @@ const AppContent: React.FC = () => {
               >
                 📈 实时状态
               </Nav.Link>
-              <Nav.Link
-                as={Link}
-                to="/ota"
-                className={`nav-link-custom ${isActiveRoute('/ota') ? 'active' : ''}`}
-              >
-                🔄 OTA更新
-              </Nav.Link>
+
               <Nav.Link
                 as={Link}
                 to="/wifi"
@@ -146,6 +142,13 @@ const AppContent: React.FC = () => {
                 className={`nav-link-custom ${isActiveRoute('/cloud-status') ? 'active' : ''}`}
               >
                 📈 云设备状态
+              </Nav.Link>
+              <Nav.Link
+                as={Link}
+                to="/ota"
+                className={`nav-link-custom ${isActiveRoute('/ota') ? 'active' : ''}`}
+              >
+                🚀 OTA管理
               </Nav.Link>
             </Nav>
           </Navbar.Collapse>
@@ -186,13 +189,14 @@ const AppContent: React.FC = () => {
           {/* 云设备管理路由 - 不需要本地设备选择 */}
           <Route path="/devices" element={<CloudDeviceManager />} />
           <Route path="/cloud-status" element={<CloudDeviceStatus />} />
+          <Route path="/ota" element={<OTAManager />} />
 
           {/* 本地设备管理路由 - 需要设备选择 */}
           {selectedDevice ? (
             <>
               <Route path="/" element={<DeviceInfo />} />
               <Route path="/status" element={<DeviceStatus />} />
-              <Route path="/ota" element={<OTAUpdate />} />
+
               <Route path="/wifi" element={<WiFiSettings />} />
             </>
           ) : (
@@ -231,6 +235,9 @@ const AppContent: React.FC = () => {
                       </Link>
                       <Link to="/cloud-status" className="btn btn-outline-success btn-custom">
                         📈 云设备状态
+                      </Link>
+                      <Link to="/ota" className="btn btn-outline-warning btn-custom">
+                        🚀 OTA管理
                       </Link>
                     </div>
                   </div>
