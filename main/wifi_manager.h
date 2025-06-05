@@ -78,6 +78,12 @@ bool wifi_manager_is_connected(void);
 const char* wifi_manager_get_ip_address(void);
 
 /**
+ * 获取Wi-Fi信号强度(RSSI)
+ * @return RSSI值(dBm)，如果未连接返回0
+ */
+int8_t wifi_manager_get_rssi(void);
+
+/**
  * 启动Wi-Fi AP模式（用于配置）
  * @param ssid AP网络名称
  * @param password AP密码

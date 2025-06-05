@@ -20,7 +20,7 @@ static EventGroupHandle_t s_wifi_event_group;
 // Wi-Fi状态变量
 static wifi_status_t s_wifi_status = {0};
 static esp_netif_t *s_sta_netif = NULL;
-static esp_netif_t *s_ap_netif = NULL;
+// static esp_netif_t *s_ap_netif = NULL;  // 暂时未使用，AP模式功能待实现
 
 /**
  * Wi-Fi事件处理函数
@@ -229,4 +229,18 @@ const char* wifi_manager_get_ip_address(void)
         return s_wifi_status.ip_address;
     }
     return NULL;
+}
+
+/**
+ * 获取Wi-Fi信号强度(RSSI)
+ */
+int8_t wifi_manager_get_rssi(void)
+{
+    if (s_wifi_status.state == WIFI_STATE_CONNECTED) {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            return ap_info.rssi;
+        }
+    }
+    return 0;
 }

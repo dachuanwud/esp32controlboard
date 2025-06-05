@@ -723,8 +723,15 @@ esp_err_t http_server_get_device_status(device_status_t* status)
 
     // 获取电机状态（通过回调函数）
     if (s_motor_callback != NULL) {
-        status->can_connected = s_motor_callback(&status->motor_left_speed, &status->motor_right_speed);
+        // 注意：这里获取的是电机状态，不是CAN状态
+        bool motor_active = s_motor_callback(&status->motor_left_speed, &status->motor_right_speed);
+        // 电机状态不等于CAN状态，这里不设置can_connected
+        (void)motor_active; // 避免未使用变量警告
     }
+
+    // CAN状态检测 - 目前没有实际CAN硬件，设置为未连接
+    // TODO: 当有实际CAN硬件时，在此处添加真实的CAN状态检测
+    status->can_connected = false;
 
     // 设置时间戳 - 将系统滴答计数转换为毫秒
     status->last_sbus_time = g_last_sbus_update * portTICK_PERIOD_MS;
