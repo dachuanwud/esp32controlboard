@@ -121,14 +121,34 @@ class SupabaseService {
   }
 
   /**
+   * 获取设备的待处理指令
+   */
+  async getPendingCommands(deviceId) {
+    try {
+      logger.debug(`📋 获取设备 ${deviceId} 的待处理指令`);
+
+      const commands = await this.deviceService.getPendingCommands(deviceId);
+
+      if (commands && commands.length > 0) {
+        logger.debug(`✅ 获取到 ${commands.length} 个待处理指令`);
+      }
+
+      return commands;
+    } catch (error) {
+      logger.error(`❌ 获取待处理指令失败: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
    * 标记指令完成
    */
   async markCommandCompleted(commandId, success = true, errorMessage = null) {
     try {
       logger.info(`✅ 标记指令完成: ${commandId} - ${success ? '成功' : '失败'}`);
-      
+
       const result = await this.deviceService.markCommandCompleted(commandId, success, errorMessage);
-      
+
       return {
         status: 'success',
         message: '指令状态已更新',

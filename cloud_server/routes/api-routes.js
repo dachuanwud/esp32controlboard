@@ -259,6 +259,26 @@ router.get('/firmware/deployments', async (req, res) => {
 });
 
 /**
+ * 下载固件文件
+ * GET /api/firmware/download/:firmwareId
+ */
+router.get('/firmware/download/:firmwareId', async (req, res) => {
+  try {
+    const firmwareService = require('../services/firmware-service');
+    const result = await firmwareService.downloadFirmware(req.params.firmwareId, res);
+    // 响应已在downloadFirmware中处理
+  } catch (error) {
+    logger.error(`固件下载失败: ${error.message}`);
+    if (!res.headersSent) {
+      res.status(500).json({
+        status: 'error',
+        message: error.message
+      });
+    }
+  }
+});
+
+/**
  * 获取服务器配置信息 (仅开发环境)
  * GET /api/config
  */

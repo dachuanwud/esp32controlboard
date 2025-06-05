@@ -89,9 +89,9 @@ router.post('/register-device-local', (req, res) => {
 router.post('/device-status', async (req, res) => {
   try {
     const { deviceId, ...statusData } = req.body;
-    
+
     logger.debug(`📊 收到设备状态更新: ${deviceId} (Supabase)`);
-    
+
     // 数据验证
     const validation = validateDeviceStatus({ deviceId, ...statusData });
     if (!validation.isValid) {
@@ -104,10 +104,15 @@ router.post('/device-status', async (req, res) => {
 
     // 数据清理
     const cleanStatusData = sanitizeStatusData(statusData);
-    
-    // 更新到Supabase
+
+    // 更新到Supabase (存储过程会自动返回待处理的指令)
     const result = await supabaseService.updateDeviceStatus(deviceId, cleanStatusData);
-    
+
+    // 存储过程已经包含了指令，直接返回结果
+    if (result && result.commands && result.commands.length > 0) {
+      logger.info(`📤 返回 ${result.commands.length} 个待处理指令给设备 ${deviceId}`);
+    }
+
     res.json(result);
   } catch (error) {
     logger.error(`设备状态更新失败: ${error.message}`);

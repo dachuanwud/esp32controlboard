@@ -990,6 +990,21 @@ esp_err_t cloud_client_send_device_status(const device_status_data_t* status_dat
                     s_retry_count = 0;
                     ESP_LOGD(TAG, "✅ 设备状态上报成功");
 
+                    // 处理响应中的指令
+                    cloud_command_t commands[MAX_COMMANDS_PER_REQUEST];
+                    int command_count = cloud_client_get_commands(commands, MAX_COMMANDS_PER_REQUEST);
+
+                    if (command_count > 0) {
+                        ESP_LOGI(TAG, "📤 收到 %d 个指令，开始处理", command_count);
+
+                        // 处理每个指令
+                        for (int i = 0; i < command_count; i++) {
+                            if (s_command_callback) {
+                                s_command_callback(&commands[i]);
+                            }
+                        }
+                    }
+
                     // 调用状态回调
                     if (s_status_callback) {
                         s_status_callback(status_data);

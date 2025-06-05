@@ -246,12 +246,22 @@ class SupabaseDeviceService {
         .from('device_commands')
         .select('*')
         .eq('device_id', deviceId)
-        .eq('status', 'pending')
+        .in('status', ['pending', 'sent'])
         .order('created_at', { ascending: true })
 
       if (error) {
         console.error('获取待处理指令失败:', error)
         throw error
+      }
+
+      // 如果有指令，将状态更新为'sent'
+      if (data && data.length > 0) {
+        const commandIds = data.map(cmd => cmd.id);
+        await this.admin
+          .from('device_commands')
+          .update({ status: 'sent', sent_at: new Date().toISOString() })
+          .in('id', commandIds)
+          .eq('status', 'pending');
       }
 
       return data || []

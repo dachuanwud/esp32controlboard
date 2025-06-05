@@ -21,6 +21,7 @@ extern "C" {
 #define MAX_HTTP_RESPONSE_SIZE 4096
 #define MAX_RETRY_ATTEMPTS 3
 #define RETRY_DELAY_MS 5000
+#define MAX_COMMANDS_PER_REQUEST 10
 
 // 设备状态枚举
 typedef enum {

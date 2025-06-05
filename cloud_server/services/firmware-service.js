@@ -3,7 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const axios = require('axios');
+
 const logger = require('../utils/logger');
 
 
@@ -351,35 +351,72 @@ class FirmwareService {
    */
   async deployToSingleDevice(device, firmware) {
     try {
-      const deviceUrl = `http://${device.local_ip}`;
-      const firmwareBuffer = await fs.readFile(firmware.file_path);
+      logger.info(`📤 开始向设备 ${device.device_id} (${device.local_ip}) 发送OTA指令`);
 
-      logger.info(`📤 开始向设备 ${device.device_id} (${device.local_ip}) 部署固件`);
+      // 构建固件下载URL (云服务器提供固件下载服务)
+      const firmwareUrl = `http://www.nagaflow.top/api/firmware/download/${firmware.id}`;
 
-      // 发送固件到设备
-      const response = await axios.post(`${deviceUrl}/api/ota/upload`, firmwareBuffer, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': firmwareBuffer.length
-        },
-        timeout: 60000, // 60秒超时
-        maxContentLength: MAX_FIRMWARE_SIZE,
-        maxBodyLength: MAX_FIRMWARE_SIZE
-      });
+      // 通过Supabase指令队列发送OTA升级指令
+      const { data, error } = await supabaseClient
+        .from('device_commands')
+        .insert({
+          device_id: device.device_id,
+          command: 'ota_update',
+          data: {
+            firmware_url: firmwareUrl,
+            firmware_size: firmware.file_size,
+            firmware_version: firmware.version,
+            firmware_hash: firmware.file_hash
+          },
+          status: 'pending',
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
 
-      if (response.data.status !== 'success') {
-        throw new Error(response.data.message || '设备OTA升级失败');
+      if (error) {
+        throw new Error(`发送OTA指令失败: ${error.message}`);
       }
 
-      return response.data;
+      logger.info(`✅ OTA指令已发送到设备 ${device.device_id} (指令ID: ${data.id})`);
+
+      // 等待设备处理指令 (最多等待5分钟)
+      const maxWaitTime = 5 * 60 * 1000; // 5分钟
+      const checkInterval = 10 * 1000; // 10秒检查一次
+      let waitTime = 0;
+
+      while (waitTime < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+        waitTime += checkInterval;
+
+        // 检查指令状态
+        const { data: commandStatus, error: statusError } = await supabaseClient
+          .from('device_commands')
+          .select('status, error_message')
+          .eq('id', data.id)
+          .single();
+
+        if (statusError) {
+          logger.warn(`检查指令状态失败: ${statusError.message}`);
+          continue;
+        }
+
+        if (commandStatus.status === 'completed') {
+          logger.info(`✅ 设备 ${device.device_id} OTA升级完成`);
+          return { status: 'success', message: 'OTA升级完成' };
+        } else if (commandStatus.status === 'failed') {
+          throw new Error(`OTA升级失败: ${commandStatus.error_message || '未知错误'}`);
+        }
+
+        logger.info(`⏳ 等待设备 ${device.device_id} 处理OTA指令... (${Math.round(waitTime/1000)}s)`);
+      }
+
+      // 超时处理
+      throw new Error('OTA升级超时，设备可能离线或升级失败');
+
     } catch (error) {
-      if (error.code === 'ECONNREFUSED') {
-        throw new Error('设备连接失败');
-      } else if (error.code === 'ETIMEDOUT') {
-        throw new Error('设备响应超时');
-      } else {
-        throw new Error(`部署失败: ${error.message}`);
-      }
+      logger.error(`设备 ${device.device_id} OTA部署失败: ${error.message}`);
+      throw error;
     }
   }
 
@@ -437,6 +474,64 @@ class FirmwareService {
       };
     } catch (error) {
       logger.error(`获取部署历史失败: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 下载固件文件
+   */
+  async downloadFirmware(firmwareId, res) {
+    try {
+      // 获取固件信息
+      const { data: firmware, error: fetchError } = await supabaseClient
+        .from('firmware')
+        .select('*')
+        .eq('id', firmwareId)
+        .single();
+
+      if (fetchError || !firmware) {
+        throw new Error('固件不存在');
+      }
+
+      // 检查文件是否存在
+      try {
+        await fs.access(firmware.file_path);
+      } catch (fileError) {
+        throw new Error('固件文件不存在');
+      }
+
+      logger.info(`📤 开始下载固件: ${firmware.filename} (${firmware.version})`);
+
+      // 设置响应头
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${firmware.original_name}"`);
+      res.setHeader('Content-Length', firmware.file_size);
+      res.setHeader('X-Firmware-Version', firmware.version);
+      res.setHeader('X-Firmware-Hash', firmware.file_hash);
+
+      // 创建文件流并发送
+      const fileStream = require('fs').createReadStream(firmware.file_path);
+
+      fileStream.on('error', (error) => {
+        logger.error(`固件文件读取失败: ${error.message}`);
+        if (!res.headersSent) {
+          res.status(500).json({
+            status: 'error',
+            message: '文件读取失败'
+          });
+        }
+      });
+
+      fileStream.on('end', () => {
+        logger.info(`✅ 固件下载完成: ${firmware.filename}`);
+      });
+
+      // 管道传输文件
+      fileStream.pipe(res);
+
+    } catch (error) {
+      logger.error(`固件下载失败: ${error.message}`);
       throw error;
     }
   }
