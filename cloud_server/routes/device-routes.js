@@ -105,15 +105,22 @@ router.post('/device-status', async (req, res) => {
     // 数据清理
     const cleanStatusData = sanitizeStatusData(statusData);
 
-    // 更新到Supabase (存储过程会自动返回待处理的指令)
+    // 更新到Supabase
     const result = await supabaseService.updateDeviceStatus(deviceId, cleanStatusData);
 
-    // 存储过程已经包含了指令，直接返回结果
-    if (result && result.commands && result.commands.length > 0) {
-      logger.info(`📤 返回 ${result.commands.length} 个待处理指令给设备 ${deviceId}`);
+    // 构建响应格式，确保包含指令
+    const response = {
+      status: 'success',
+      message: '设备状态更新成功',
+      commands: result.commands || []
+    };
+
+    // 如果有指令，记录日志
+    if (response.commands.length > 0) {
+      logger.info(`📤 返回 ${response.commands.length} 个待处理指令给设备 ${deviceId}`);
     }
 
-    res.json(result);
+    res.json(response);
   } catch (error) {
     logger.error(`设备状态更新失败: ${error.message}`);
     res.status(500).json({

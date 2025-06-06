@@ -144,11 +144,18 @@ class SupabaseDeviceService {
    */
   async updateDeviceStatus(deviceId, statusData) {
     try {
-      // 调用存储过程更新状态
-      const { data, error } = await this.admin.rpc('update_device_status', {
-        p_device_id: deviceId,
-        p_status_data: statusData
-      })
+      // 直接更新设备表，避免函数重载冲突
+      const { data, error } = await this.admin
+        .from('esp32_devices')
+        .update({
+          status: 'online',
+          last_seen: new Date().toISOString(),
+          status_data: statusData,
+          updated_at: new Date().toISOString()
+        })
+        .eq('device_id', deviceId)
+        .select()
+        .single()
 
       if (error) {
         console.error('更新设备状态失败:', error)
@@ -156,7 +163,14 @@ class SupabaseDeviceService {
       }
 
       console.log(`[STATUS] 设备 ${deviceId} 状态已更新到Supabase`)
-      return data
+
+      // 获取并返回待处理的指令
+      const commands = await this.getPendingCommands(deviceId)
+
+      return {
+        device: data,
+        commands: commands
+      }
     } catch (error) {
       console.error('更新设备状态时发生错误:', error)
       throw error

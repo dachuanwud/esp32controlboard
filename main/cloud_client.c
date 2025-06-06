@@ -19,6 +19,7 @@ static void set_last_error(const char* error_msg);
 static cloud_command_type_t parse_command_type(const char* command_str);
 static esp_err_t handle_ota_command(const cJSON* data);
 static esp_err_t download_and_install_firmware(const char* url, uint32_t expected_size);
+static void ota_progress_callback(uint8_t progress_percent, const char* status_message);
 
 // 全局变量
 static cloud_device_info_t s_device_info = {0};
@@ -640,10 +641,33 @@ static esp_err_t download_and_install_firmware(const char* url, uint32_t expecte
 
     ESP_LOGI(TAG, "📏 固件大小: %d bytes", content_length);
 
+    // 检查HTTP状态码
+    int status_code = esp_http_client_get_status_code(client);
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "❌ HTTP错误状态码: %d", status_code);
+        ret = ESP_FAIL;
+        goto cleanup;
+    }
+
+    // 检查Content-Type
+    char *content_type = NULL;
+    esp_http_client_get_header(client, "Content-Type", &content_type);
+    if (content_type && strstr(content_type, "application/json")) {
+        ESP_LOGE(TAG, "❌ 服务器返回错误信息而非固件文件 (Content-Type: %s)", content_type);
+        ret = ESP_FAIL;
+        goto cleanup;
+    }
+
     // 验证文件大小
     if (expected_size > 0 && (uint32_t)content_length != expected_size) {
         ESP_LOGW(TAG, "⚠️ 固件大小不匹配: 期望 %lu, 实际 %d",
                 (unsigned long)expected_size, content_length);
+        // 如果大小差异太大，可能是错误响应
+        if (content_length < 1000) {
+            ESP_LOGE(TAG, "❌ 固件文件太小，可能是错误响应");
+            ret = ESP_FAIL;
+            goto cleanup;
+        }
     }
 
     // 开始OTA更新
@@ -1347,8 +1371,15 @@ static void ota_progress_callback(uint8_t progress_percent, const char* status_m
  */
 esp_err_t cloud_client_send_ota_progress(const char* command_id, uint8_t progress, const char* message)
 {
-    if (!s_client_running || !s_client_connected) {
-        ESP_LOGW(TAG, "云客户端未连接，跳过OTA进度上报");
+    if (!s_client_running) {
+        ESP_LOGW(TAG, "云客户端未运行，跳过OTA进度上报");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // 检查WiFi连接状态而不是云客户端连接状态
+    // 因为OTA过程中可能会有临时的连接问题
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "WiFi未连接，跳过OTA进度上报");
         return ESP_ERR_INVALID_STATE;
     }
 

@@ -181,7 +181,11 @@ esp_err_t ota_manager_write(const void* data, size_t size)
     // 写入数据到OTA分区
     esp_err_t ret = esp_ota_write(s_ota_handle, data, size);
     if (ret != ESP_OK) {
-        set_error("Failed to write OTA data");
+        char error_msg[128];
+        snprintf(error_msg, sizeof(error_msg), "Failed to write OTA data: %s", esp_err_to_name(ret));
+        set_error(error_msg);
+        ESP_LOGE(TAG, "❌ OTA写入失败: %s (写入大小: %zu, 已写入: %" PRIu32 "/%" PRIu32 ")",
+                esp_err_to_name(ret), size, s_written_size, s_firmware_size);
         return ret;
     }
 
