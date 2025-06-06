@@ -20,6 +20,9 @@ static cloud_command_type_t parse_command_type(const char* command_str);
 static esp_err_t handle_ota_command(const cJSON* data);
 static esp_err_t download_and_install_firmware(const char* url, uint32_t expected_size);
 static void ota_progress_callback(uint8_t progress_percent, const char* status_message);
+static esp_http_client_handle_t create_http_client(const char* url);
+static esp_err_t add_auth_headers(esp_http_client_handle_t client);
+static esp_err_t fetch_pending_commands(void);
 
 // 全局变量
 static cloud_device_info_t s_device_info = {0};
@@ -240,23 +243,104 @@ static void status_task(void *pvParameters)
 }
 
 /**
+ * 主动获取待处理指令
+ */
+static esp_err_t fetch_pending_commands(void)
+{
+    if (!wifi_manager_is_connected()) {
+        return ESP_ERR_WIFI_NOT_CONNECT;
+    }
+
+    ESP_LOGD(TAG, "🔍 主动获取待处理指令...");
+
+    // 构建请求URL
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device-commands/%s/pending",
+             CLOUD_SERVER_URL, s_device_info.device_id);
+
+    // 创建HTTP客户端
+    esp_http_client_handle_t client = create_http_client(url);
+    if (!client) {
+        ESP_LOGE(TAG, "❌ 创建HTTP客户端失败");
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = ESP_OK;
+
+    // 设置请求方法和头部
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    ret = add_auth_headers(client);
+
+    if (ret == ESP_OK) {
+        // 清空响应缓冲区
+        s_response_len = 0;
+        memset(s_response_buffer, 0, sizeof(s_response_buffer));
+
+        ret = esp_http_client_perform(client);
+        if (ret == ESP_OK) {
+            int status_code = esp_http_client_get_status_code(client);
+            if (status_code == 200) {
+                ESP_LOGD(TAG, "✅ 成功获取待处理指令");
+
+                // 处理响应中的指令
+                cloud_command_t commands[MAX_COMMANDS_PER_REQUEST];
+                int command_count = cloud_client_get_commands(commands, MAX_COMMANDS_PER_REQUEST);
+
+                if (command_count > 0) {
+                    ESP_LOGI(TAG, "📤 获取到 %d 个待处理指令", command_count);
+
+                    // 处理每个指令
+                    for (int i = 0; i < command_count; i++) {
+                        ESP_LOGI(TAG, "🔧 处理指令: %d, 类型: %d", commands[i].id, commands[i].command);
+
+                        if (s_command_callback) {
+                            s_command_callback(&commands[i]);
+                        }
+                    }
+                } else {
+                    ESP_LOGD(TAG, "📭 没有待处理指令");
+                }
+            } else {
+                ESP_LOGW(TAG, "⚠️ 获取指令失败，HTTP状态码: %d", status_code);
+                ret = ESP_FAIL;
+            }
+        } else {
+            ESP_LOGE(TAG, "❌ HTTP请求失败: %s", esp_err_to_name(ret));
+        }
+    }
+
+    esp_http_client_cleanup(client);
+    return ret;
+}
+
+/**
  * 指令轮询任务
  */
 static void command_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "指令轮询任务已启动");
-    
+    ESP_LOGI(TAG, "📋 指令轮询任务已启动");
+    ESP_LOGI(TAG, "⏰ 轮询间隔: %d秒", COMMAND_POLL_INTERVAL_MS / 1000);
+
+    uint32_t poll_count = 0;
+
     while (s_client_running) {
         if (wifi_manager_is_connected() && s_client_connected) {
-            // 通过状态上报接口获取指令（复用现有机制）
-            // 指令会在状态上报的响应中返回
-            ESP_LOGD(TAG, "指令轮询中...");
+            poll_count++;
+            ESP_LOGD(TAG, "🔍 第%" PRIu32 "次指令轮询...", poll_count);
+
+            // 主动获取待处理指令
+            esp_err_t ret = fetch_pending_commands();
+            if (ret != ESP_OK) {
+                ESP_LOGD(TAG, "⚠️ 指令轮询失败: %s", esp_err_to_name(ret));
+            }
+        } else {
+            ESP_LOGD(TAG, "📡 网络未连接，跳过指令轮询");
         }
-        
+
         vTaskDelay(pdMS_TO_TICKS(COMMAND_POLL_INTERVAL_MS));
     }
-    
-    ESP_LOGI(TAG, "指令轮询任务已停止");
+
+    ESP_LOGI(TAG, "📋 指令轮询任务已停止 (总计轮询%" PRIu32 "次)", poll_count);
     s_command_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -562,7 +646,7 @@ static cloud_command_type_t parse_command_type(const char* command_str)
  */
 static esp_err_t handle_ota_command(const cJSON* data)
 {
-    ESP_LOGI(TAG, "🚀 处理OTA升级指令");
+    ESP_LOGI(TAG, "🚀 开始处理OTA升级指令");
 
     if (!data) {
         ESP_LOGE(TAG, "❌ OTA指令数据为空");
@@ -573,29 +657,58 @@ static esp_err_t handle_ota_command(const cJSON* data)
     cJSON *firmware_url = cJSON_GetObjectItem(data, "firmware_url");
     cJSON *firmware_size = cJSON_GetObjectItem(data, "firmware_size");
     cJSON *firmware_version = cJSON_GetObjectItem(data, "firmware_version");
+    cJSON *firmware_hash = cJSON_GetObjectItem(data, "firmware_hash");
 
     if (!firmware_url || !cJSON_IsString(firmware_url)) {
-        ESP_LOGE(TAG, "❌ 固件URL无效");
+        ESP_LOGE(TAG, "❌ 固件URL无效或缺失");
         return ESP_ERR_INVALID_ARG;
     }
 
     const char* url = cJSON_GetStringValue(firmware_url);
     uint32_t size = firmware_size ? (uint32_t)cJSON_GetNumberValue(firmware_size) : 0;
     const char* version = firmware_version ? cJSON_GetStringValue(firmware_version) : "unknown";
+    const char* hash = firmware_hash ? cJSON_GetStringValue(firmware_hash) : NULL;
 
-    ESP_LOGI(TAG, "📦 开始OTA升级:");
-    ESP_LOGI(TAG, "   固件URL: %s", url);
-    ESP_LOGI(TAG, "   固件大小: %lu bytes", (unsigned long)size);
-    ESP_LOGI(TAG, "   固件版本: %s", version);
+    ESP_LOGI(TAG, "📦 OTA升级参数:");
+    ESP_LOGI(TAG, "   📍 固件URL: %s", url);
+    ESP_LOGI(TAG, "   📏 固件大小: %lu bytes (%.2f KB)", (unsigned long)size, (float)size / 1024.0);
+    ESP_LOGI(TAG, "   🏷️ 固件版本: %s", version);
+    if (hash) {
+        ESP_LOGI(TAG, "   🔐 固件哈希: %.16s...", hash);
+    }
+
+    // 检查当前固件版本
+    ESP_LOGI(TAG, "🔍 当前固件版本: %s", s_device_info.firmware_version);
+    if (strcmp(version, s_device_info.firmware_version) == 0) {
+        ESP_LOGW(TAG, "⚠️ 目标版本与当前版本相同，跳过升级");
+        return ESP_OK;
+    }
+
+    // 检查可用内存
+    uint32_t free_heap = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "💾 当前可用内存: %lu bytes (%.2f KB)", (unsigned long)free_heap, (float)free_heap / 1024.0);
+
+    if (free_heap < 100 * 1024) { // 至少需要100KB可用内存
+        ESP_LOGE(TAG, "❌ 可用内存不足，无法进行OTA升级");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // 发送开始升级状态
+    cloud_client_send_command_feedback(s_current_command_id, "processing", "开始下载固件");
 
     // 下载并安装固件
+    ESP_LOGI(TAG, "📥 开始下载并安装固件...");
     esp_err_t ret = download_and_install_firmware(url, size);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "❌ OTA升级失败: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    ESP_LOGI(TAG, "✅ OTA升级成功，准备重启");
+    ESP_LOGI(TAG, "✅ OTA升级成功，准备重启应用新固件");
+
+    // 发送成功状态（在重启前）
+    cloud_client_send_command_feedback(s_current_command_id, "completed", "固件升级成功，即将重启");
+
     return ESP_OK;
 }
 
@@ -817,12 +930,23 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
                 ESP_LOGI(TAG, "🚀 收到OTA升级指令，立即处理");
                 ESP_LOGI(TAG, "📋 指令ID: %s", s_current_command_id);
 
+                // 发送指令接收确认
+                cloud_client_send_command_feedback(s_current_command_id, "received", "OTA指令已接收，开始处理");
+
                 // 设置OTA进度回调
                 ota_manager_set_progress_callback(ota_progress_callback);
 
                 esp_err_t ota_ret = handle_ota_command(data_obj);
                 if (ota_ret != ESP_OK) {
-                    ESP_LOGE(TAG, "❌ OTA升级处理失败");
+                    ESP_LOGE(TAG, "❌ OTA升级处理失败: %s", esp_err_to_name(ota_ret));
+
+                    // 发送失败反馈
+                    char error_msg[128];
+                    snprintf(error_msg, sizeof(error_msg), "OTA升级失败: %s", esp_err_to_name(ota_ret));
+                    cloud_client_send_command_feedback(s_current_command_id, "failed", error_msg);
+                } else {
+                    ESP_LOGI(TAG, "✅ OTA升级处理成功");
+                    // 成功的反馈会在重启前发送
                 }
                 // OTA指令不返回给调用者，因为它会导致重启
                 continue;
@@ -1364,6 +1488,62 @@ static void ota_progress_callback(uint8_t progress_percent, const char* status_m
     if (strlen(s_current_command_id) > 0) {
         cloud_client_send_ota_progress(s_current_command_id, progress_percent, status_message);
     }
+}
+
+/**
+ * 发送指令执行状态反馈
+ */
+esp_err_t cloud_client_send_command_feedback(const char* command_id, const char* status, const char* message)
+{
+    if (!s_client_running || !wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "无法发送指令反馈：客户端未运行或网络未连接");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!command_id || !status) {
+        ESP_LOGE(TAG, "指令ID和状态不能为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "📤 发送指令执行反馈: ID=%s, 状态=%s", command_id, status);
+
+    // 创建JSON数据
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        ESP_LOGE(TAG, "创建JSON对象失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddStringToObject(json, "deviceId", s_device_info.device_id);
+    cJSON_AddStringToObject(json, "commandId", command_id);
+    cJSON_AddStringToObject(json, "status", status);
+    if (message) {
+        cJSON_AddStringToObject(json, "message", message);
+    }
+    cJSON_AddStringToObject(json, "timestamp", ""); // 服务器会设置时间戳
+
+    char *json_string = cJSON_Print(json);
+    cJSON_Delete(json);
+
+    if (!json_string) {
+        ESP_LOGE(TAG, "序列化指令反馈JSON失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // 发送HTTP POST请求
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device-commands/feedback", CLOUD_SERVER_URL);
+
+    esp_err_t err = send_http_post(url, json_string);
+    free(json_string);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "✅ 指令反馈发送成功");
+    } else {
+        ESP_LOGW(TAG, "⚠️ 指令反馈发送失败: %s", esp_err_to_name(err));
+    }
+
+    return err;
 }
 
 /**

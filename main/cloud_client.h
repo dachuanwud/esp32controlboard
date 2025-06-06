@@ -206,6 +206,15 @@ esp_err_t cloud_client_unregister_device(const char* reason);
 esp_err_t cloud_client_graceful_shutdown(const char* reason);
 
 /**
+ * 发送指令执行状态反馈
+ * @param command_id 指令ID
+ * @param status 执行状态 (received/processing/completed/failed)
+ * @param message 状态消息
+ * @return ESP_OK=成功
+ */
+esp_err_t cloud_client_send_command_feedback(const char* command_id, const char* status, const char* message);
+
+/**
  * 发送OTA进度到云端
  * @param command_id 指令ID
  * @param progress 进度百分比 (0-100)
