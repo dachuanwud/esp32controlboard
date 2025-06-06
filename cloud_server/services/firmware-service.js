@@ -302,14 +302,22 @@ class FirmwareService {
       let completedCount = 0;
       let failedCount = 0;
 
-      // 并发部署到所有设备
-      const deploymentPromises = devices.map(async (device) => {
+      // 并发部署到所有设备，但增加实时进度更新
+      const deploymentPromises = devices.map(async (device, index) => {
         try {
-          await this.deployToSingleDevice(device, firmware);
+          await this.deployToSingleDevice(device, firmware, deploymentId);
           completedCount++;
-          logger.info(`✅ 设备 ${device.device_id} 部署成功`);
+
+          // 实时更新部署进度
+          await this.updateDeploymentProgress(deploymentId, completedCount, failedCount, devices.length);
+
+          logger.info(`✅ 设备 ${device.device_id} 部署成功 (${completedCount}/${devices.length})`);
         } catch (error) {
           failedCount++;
+
+          // 实时更新部署进度
+          await this.updateDeploymentProgress(deploymentId, completedCount, failedCount, devices.length);
+
           logger.error(`❌ 设备 ${device.device_id} 部署失败: ${error.message}`);
         }
       });
@@ -317,7 +325,7 @@ class FirmwareService {
       await Promise.allSettled(deploymentPromises);
 
       // 更新最终状态
-      const finalStatus = failedCount === 0 ? 'completed' : 
+      const finalStatus = failedCount === 0 ? 'completed' :
                          completedCount === 0 ? 'failed' : 'partial';
 
       await supabaseClient
@@ -333,7 +341,7 @@ class FirmwareService {
       logger.info(`🏁 部署完成: ${completedCount}成功, ${failedCount}失败`);
     } catch (error) {
       logger.error(`部署执行失败: ${error.message}`);
-      
+
       // 更新部署状态为失败
       await supabaseClient
         .from('firmware_deployments')
@@ -347,9 +355,27 @@ class FirmwareService {
   }
 
   /**
+   * 更新部署进度
+   */
+  async updateDeploymentProgress(deploymentId, completedCount, failedCount, totalCount) {
+    try {
+      await supabaseClient
+        .from('firmware_deployments')
+        .update({
+          completed_devices: completedCount,
+          failed_devices: failedCount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', deploymentId);
+    } catch (error) {
+      logger.warn(`更新部署进度失败: ${error.message}`);
+    }
+  }
+
+  /**
    * 部署固件到单个设备
    */
-  async deployToSingleDevice(device, firmware) {
+  async deployToSingleDevice(device, firmware, deploymentId = null) {
     try {
       logger.info(`📤 开始向设备 ${device.device_id} (${device.local_ip}) 发送OTA指令`);
 
@@ -366,7 +392,8 @@ class FirmwareService {
             firmware_url: firmwareUrl,
             firmware_size: firmware.file_size,
             firmware_version: firmware.version,
-            firmware_hash: firmware.file_hash
+            firmware_hash: firmware.file_hash,
+            deployment_id: deploymentId // 添加部署ID用于跟踪
           },
           status: 'pending',
           created_at: new Date().toISOString()
@@ -474,6 +501,165 @@ class FirmwareService {
       };
     } catch (error) {
       logger.error(`获取部署历史失败: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 获取实时部署状态（包含进行中的部署实时信息）
+   */
+  async getRealtimeDeploymentStatus(limit = 50) {
+    try {
+      // 获取基础部署数据
+      const { data: deployments, error } = await supabaseClient
+        .from('firmware_deployment_overview')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        throw error;
+      }
+
+      // 为进行中的部署计算实时耗时和进度
+      const enhancedDeployments = await Promise.all(deployments.map(async deployment => {
+        let enhancedDeployment = { ...deployment };
+
+        // 如果是进行中的部署，计算实时耗时
+        if (deployment.status === 'in_progress' && deployment.started_at) {
+          const startTime = new Date(deployment.started_at);
+          const currentTime = new Date();
+          const durationSeconds = Math.floor((currentTime - startTime) / 1000);
+          enhancedDeployment.duration_seconds = durationSeconds;
+
+          // 获取实时进度信息
+          const progressInfo = await this.getDeploymentProgress(deployment.id);
+          if (progressInfo) {
+            enhancedDeployment.completion_percentage = progressInfo.progress;
+            enhancedDeployment.completed_devices = progressInfo.completed_devices;
+            enhancedDeployment.failed_devices = progressInfo.failed_devices;
+          }
+        }
+
+        // 确保进度百分比不为null
+        if (enhancedDeployment.completion_percentage === null || enhancedDeployment.completion_percentage === undefined) {
+          enhancedDeployment.completion_percentage = 0;
+        }
+
+        return enhancedDeployment;
+      }));
+
+      return {
+        status: 'success',
+        deployments: enhancedDeployments,
+        count: enhancedDeployments.length
+      };
+    } catch (error) {
+      logger.error(`获取实时部署状态失败: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 获取部署进度信息
+   */
+  async getDeploymentProgress(deploymentId) {
+    try {
+      // 查询相关的设备指令进度
+      const { data: commands, error } = await supabaseClient
+        .from('device_commands')
+        .select('status, data')
+        .eq('command', 'ota_update')
+        .like('data->>deployment_id', deploymentId);
+
+      if (error) {
+        logger.warn(`获取部署进度失败: ${error.message}`);
+        return null;
+      }
+
+      if (!commands || commands.length === 0) {
+        return null;
+      }
+
+      // 计算总体进度
+      let totalProgress = 0;
+      let completedDevices = 0;
+      let failedDevices = 0;
+
+      commands.forEach(command => {
+        if (command.status === 'completed') {
+          completedDevices++;
+          totalProgress += 100;
+        } else if (command.status === 'failed') {
+          failedDevices++;
+        } else if (command.data && command.data.progress) {
+          totalProgress += command.data.progress;
+        }
+      });
+
+      const averageProgress = commands.length > 0 ? Math.round(totalProgress / commands.length) : 0;
+
+      return {
+        progress: averageProgress,
+        completed_devices: completedDevices,
+        failed_devices: failedDevices,
+        total_devices: commands.length
+      };
+    } catch (error) {
+      logger.warn(`获取部署进度失败: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 更新OTA进度
+   */
+  async updateOTAProgress(deviceId, commandId, progressData) {
+    try {
+      const { progress, message } = progressData;
+
+      // 首先获取当前的data字段
+      const { data: currentCommand, error: fetchError } = await supabaseClient
+        .from('device_commands')
+        .select('data')
+        .eq('id', commandId)
+        .eq('device_id', deviceId)
+        .single();
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      // 合并进度信息
+      const updatedData = {
+        ...(currentCommand.data || {}),
+        progress: progress,
+        status_message: message || '',
+        last_progress_update: new Date().toISOString()
+      };
+
+      // 更新指令的进度信息
+      const { error } = await supabaseClient
+        .from('device_commands')
+        .update({
+          data: updatedData,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', commandId)
+        .eq('device_id', deviceId);
+
+      if (error) {
+        throw error;
+      }
+
+      logger.info(`📊 设备 ${deviceId} OTA进度更新: ${progress}% - ${message}`);
+
+      return {
+        status: 'success',
+        message: 'OTA进度更新成功'
+      };
+    } catch (error) {
+      logger.error(`更新OTA进度失败: ${error.message}`);
       throw error;
     }
   }

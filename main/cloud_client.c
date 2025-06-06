@@ -29,6 +29,9 @@ static TaskHandle_t s_command_task_handle = NULL;
 static void (*s_command_callback)(const cloud_command_t* command) = NULL;
 static void (*s_status_callback)(const device_status_data_t* status) = NULL;
 
+// OTA相关变量
+static char s_current_command_id[64] = {0};
+
 // HTTP响应缓冲区
 static char s_response_buffer[MAX_HTTP_RESPONSE_SIZE];
 static int s_response_len = 0;
@@ -756,7 +759,16 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
         cJSON *timestamp_obj = cJSON_GetObjectItem(cmd_obj, "timestamp");
 
         if (id_obj && command_obj) {
-            commands[count].id = (uint32_t)cJSON_GetNumberValue(id_obj);
+            // 处理指令ID（可能是字符串或数字）
+            if (cJSON_IsString(id_obj)) {
+                const char* id_str = cJSON_GetStringValue(id_obj);
+                strncpy(s_current_command_id, id_str, sizeof(s_current_command_id) - 1);
+                s_current_command_id[sizeof(s_current_command_id) - 1] = '\0';
+                commands[count].id = 0; // 设置为0，因为我们使用字符串ID
+            } else {
+                commands[count].id = (uint32_t)cJSON_GetNumberValue(id_obj);
+                snprintf(s_current_command_id, sizeof(s_current_command_id), "%lu", (unsigned long)commands[count].id);
+            }
 
             // 解析指令类型
             const char* cmd_str = cJSON_GetStringValue(command_obj);
@@ -779,6 +791,11 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
             // 立即处理OTA指令
             if (commands[count].command == CLOUD_CMD_OTA_UPDATE) {
                 ESP_LOGI(TAG, "🚀 收到OTA升级指令，立即处理");
+                ESP_LOGI(TAG, "📋 指令ID: %s", s_current_command_id);
+
+                // 设置OTA进度回调
+                ota_manager_set_progress_callback(ota_progress_callback);
+
                 esp_err_t ota_ret = handle_ota_command(data_obj);
                 if (ota_ret != ESP_OK) {
                     ESP_LOGE(TAG, "❌ OTA升级处理失败");
@@ -1313,4 +1330,68 @@ esp_err_t cloud_client_graceful_shutdown(const char* reason)
 
     ESP_LOGI(TAG, "✅ 云客户端优雅关闭完成");
     return ret;
+}
+
+/**
+ * OTA进度回调函数
+ */
+static void ota_progress_callback(uint8_t progress_percent, const char* status_message)
+{
+    if (strlen(s_current_command_id) > 0) {
+        cloud_client_send_ota_progress(s_current_command_id, progress_percent, status_message);
+    }
+}
+
+/**
+ * 发送OTA进度到云端
+ */
+esp_err_t cloud_client_send_ota_progress(const char* command_id, uint8_t progress, const char* message)
+{
+    if (!s_client_running || !s_client_connected) {
+        ESP_LOGW(TAG, "云客户端未连接，跳过OTA进度上报");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!command_id) {
+        ESP_LOGE(TAG, "指令ID不能为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // 创建JSON数据
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        ESP_LOGE(TAG, "创建JSON对象失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddStringToObject(json, "deviceId", s_device_info.device_id);
+    cJSON_AddStringToObject(json, "commandId", command_id);
+    cJSON_AddNumberToObject(json, "progress", progress);
+    cJSON_AddStringToObject(json, "status", "in_progress");
+    if (message) {
+        cJSON_AddStringToObject(json, "message", message);
+    }
+
+    char *json_string = cJSON_Print(json);
+    cJSON_Delete(json);
+
+    if (!json_string) {
+        ESP_LOGE(TAG, "序列化OTA进度JSON失败");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // 发送HTTP POST请求
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/firmware/ota-progress", CLOUD_SERVER_URL);
+
+    ESP_LOGD(TAG, "📊 发送OTA进度: %d%% - %s", progress, message ? message : "");
+
+    esp_err_t err = send_http_post(url, json_string);
+    free(json_string);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "发送OTA进度失败: %s", esp_err_to_name(err));
+    }
+
+    return err;
 }

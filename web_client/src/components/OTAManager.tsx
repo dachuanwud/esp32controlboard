@@ -53,25 +53,54 @@ const OTAManager: React.FC = () => {
 
   useEffect(() => {
     loadData()
-    const interval = setInterval(loadData, 10000) // 每10秒刷新一次
-    return () => clearInterval(interval)
+
+    // 设置不同的刷新间隔：基础数据10秒，部署状态3秒
+    const basicDataInterval = setInterval(() => {
+      loadBasicData()
+    }, 10000)
+
+    const deploymentStatusInterval = setInterval(() => {
+      loadDeploymentStatus()
+    }, 3000) // 每3秒刷新部署状态
+
+    return () => {
+      clearInterval(basicDataInterval)
+      clearInterval(deploymentStatusInterval)
+    }
   }, [])
 
   const loadData = async () => {
+    try {
+      await Promise.all([
+        loadBasicData(),
+        loadDeploymentStatus()
+      ])
+    } catch (err) {
+      console.error('加载数据失败:', err)
+    }
+  }
+
+  const loadBasicData = async () => {
     try {
       const [firmwareResult, devicesResult] = await Promise.all([
         otaAPI.getFirmwareList(),
         cloudDeviceAPI.getOnlineDevices()
       ])
-      
+
       setFirmwareList(firmwareResult.firmware || [])
       setDevices(devicesResult)
-      
-      // 加载部署历史
-      const deploymentsResult = await otaAPI.getDeploymentHistory()
+    } catch (err) {
+      console.error('加载基础数据失败:', err)
+    }
+  }
+
+  const loadDeploymentStatus = async () => {
+    try {
+      // 使用实时部署状态API
+      const deploymentsResult = await otaAPI.getRealtimeDeploymentStatus()
       setDeployments(deploymentsResult.deployments || [])
     } catch (err) {
-      console.error('加载数据失败:', err)
+      console.error('加载部署状态失败:', err)
     }
   }
 
@@ -181,6 +210,20 @@ const OTAManager: React.FC = () => {
     return <Badge bg={config.variant}>{config.text}</Badge>
   }
 
+  const formatDuration = (seconds: number): string => {
+    if (seconds < 60) {
+      return `${Math.round(seconds)}秒`
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60)
+      const remainingSeconds = Math.round(seconds % 60)
+      return `${minutes}分${remainingSeconds}秒`
+    } else {
+      const hours = Math.floor(seconds / 3600)
+      const minutes = Math.floor((seconds % 3600) / 60)
+      return `${hours}小时${minutes}分钟`
+    }
+  }
+
   return (
     <div className="ota-manager">
       {error && (
@@ -259,20 +302,23 @@ const OTAManager: React.FC = () => {
 
       {/* 部署历史 */}
       <Card>
-        <Card.Header>
+        <Card.Header className="d-flex justify-content-between align-items-center">
           <h5 className="mb-0">🚀 部署历史</h5>
+          <small className="text-muted">
+            自动刷新中 • 每3秒更新状态
+          </small>
         </Card.Header>
         <Card.Body>
           <Table responsive striped hover>
             <thead>
               <tr>
-                <th>部署名称</th>
-                <th>固件版本</th>
-                <th>状态</th>
-                <th>进度</th>
-                <th>设备数量</th>
-                <th>创建时间</th>
-                <th>耗时</th>
+                <th style={{ minWidth: '200px' }}>部署名称</th>
+                <th style={{ minWidth: '100px' }}>固件版本</th>
+                <th style={{ minWidth: '120px' }}>状态</th>
+                <th style={{ minWidth: '150px' }}>进度</th>
+                <th style={{ minWidth: '100px' }}>设备数量</th>
+                <th style={{ minWidth: '180px' }}>时间信息</th>
+                <th style={{ minWidth: '100px' }}>耗时</th>
               </tr>
             </thead>
             <tbody>
@@ -280,25 +326,51 @@ const OTAManager: React.FC = () => {
                 <tr key={deployment.id}>
                   <td>{deployment.deployment_name}</td>
                   <td>{deployment.firmware_version}</td>
-                  <td>{getStatusBadge(deployment.status)}</td>
+                  <td>
+                    {getStatusBadge(deployment.status)}
+                    {deployment.status === 'in_progress' && (
+                      <Spinner size="sm" className="ms-2" animation="border" />
+                    )}
+                  </td>
                   <td>
                     <ProgressBar
-                      now={deployment.completion_percentage}
-                      label={`${deployment.completion_percentage}%`}
-                      style={{ minWidth: '100px' }}
+                      now={deployment.completion_percentage || 0}
+                      label={`${Math.round(deployment.completion_percentage || 0)}%`}
+                      style={{ minWidth: '120px' }}
+                      variant={
+                        deployment.status === 'completed' ? 'success' :
+                        deployment.status === 'failed' ? 'danger' :
+                        deployment.status === 'partial' ? 'warning' : 'info'
+                      }
+                      animated={deployment.status === 'in_progress'}
                     />
                   </td>
                   <td>
-                    {deployment.completed_devices}/{deployment.total_devices}
-                    {deployment.failed_devices > 0 && (
-                      <span className="text-danger"> ({deployment.failed_devices}失败)</span>
-                    )}
+                    <div>
+                      <strong>{deployment.completed_devices}/{deployment.total_devices}</strong>
+                      {deployment.failed_devices > 0 && (
+                        <div className="text-danger small">
+                          {deployment.failed_devices} 失败
+                        </div>
+                      )}
+                    </div>
                   </td>
-                  <td>{new Date(deployment.created_at).toLocaleString()}</td>
                   <td>
-                    {deployment.duration_seconds 
-                      ? `${Math.round(deployment.duration_seconds)}秒`
-                      : deployment.status === 'in_progress' ? '进行中...' : '-'
+                    <div className="small">
+                      <div>创建: {new Date(deployment.created_at).toLocaleString()}</div>
+                      {deployment.started_at && (
+                        <div className="text-muted">
+                          开始: {new Date(deployment.started_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    {deployment.duration_seconds !== null && deployment.duration_seconds !== undefined
+                      ? formatDuration(deployment.duration_seconds)
+                      : deployment.status === 'in_progress'
+                        ? <span className="text-warning">进行中...</span>
+                        : <span className="text-muted">-</span>
                     }
                   </td>
                 </tr>

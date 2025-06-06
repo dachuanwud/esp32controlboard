@@ -295,6 +295,15 @@ export const otaAPI = {
     }
     throw new Error(response.data.message || 'Failed to get deployment history')
   },
+
+  // 获取实时部署状态
+  getRealtimeDeploymentStatus: async (): Promise<{ deployments: any[] }> => {
+    const response = await axios.get('/api/firmware/deployments/realtime')
+    if (response.data.status === 'success') {
+      return response.data
+    }
+    throw new Error(response.data.message || 'Failed to get realtime deployment status')
+  },
 }
 
 export const cloudDeviceAPI = {

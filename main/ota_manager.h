@@ -25,6 +25,9 @@ typedef struct {
     uint32_t rollback_timeout_ms;
 } ota_config_t;
 
+// OTA进度回调函数类型
+typedef void (*ota_progress_callback_t)(uint8_t progress_percent, const char* status_message);
+
 /**
  * 初始化OTA管理器
  * @param config OTA配置参数
@@ -111,5 +114,11 @@ esp_err_t ota_manager_get_version(char* version_buffer, size_t buffer_size);
  * @return 实际分区数量
  */
 uint8_t ota_manager_get_partition_info(esp_partition_t* partition_info, uint8_t max_partitions);
+
+/**
+ * 设置OTA进度回调函数
+ * @param callback 进度回调函数指针
+ */
+void ota_manager_set_progress_callback(ota_progress_callback_t callback);
 
 #endif /* OTA_MANAGER_H */

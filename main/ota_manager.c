@@ -25,6 +25,9 @@ static const esp_partition_t *s_running_partition = NULL;
 static uint32_t s_firmware_size = 0;
 static uint32_t s_written_size = 0;
 
+// 进度回调函数
+static ota_progress_callback_t s_progress_callback = NULL;
+
 /**
  * 更新OTA进度信息
  */
@@ -50,6 +53,11 @@ static void update_progress(ota_state_t state, const char* message)
     ESP_LOGI(TAG, "📊 OTA Progress: %d%% (%" PRIu32 "/%" PRIu32 ") bytes - %s",
              s_ota_progress.progress_percent, s_written_size, s_firmware_size,
              s_ota_progress.status_message);
+
+    // 向云端报告进度（如果有回调函数）
+    if (s_progress_callback) {
+        s_progress_callback(s_ota_progress.progress_percent, s_ota_progress.status_message);
+    }
 }
 
 /**
@@ -380,4 +388,13 @@ uint8_t ota_manager_get_partition_info(esp_partition_t* partition_info, uint8_t 
     }
 
     return count;
+}
+
+/**
+ * 设置OTA进度回调函数
+ */
+void ota_manager_set_progress_callback(ota_progress_callback_t callback)
+{
+    s_progress_callback = callback;
+    ESP_LOGI(TAG, "OTA进度回调函数已设置: %s", callback ? "已启用" : "已禁用");
 }

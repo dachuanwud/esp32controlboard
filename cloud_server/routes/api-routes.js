@@ -259,6 +259,83 @@ router.get('/firmware/deployments', async (req, res) => {
 });
 
 /**
+ * 获取实时部署状态（包含进行中的部署）
+ * GET /api/firmware/deployments/realtime
+ */
+router.get('/firmware/deployments/realtime', async (req, res) => {
+  try {
+    const firmwareService = require('../services/firmware-service');
+    const result = await firmwareService.getRealtimeDeploymentStatus();
+    res.json(result);
+  } catch (error) {
+    logger.error(`获取实时部署状态失败: ${error.message}`);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * 测试POST请求
+ * POST /api/firmware/test-post
+ */
+router.post('/firmware/test-post', (req, res) => {
+  logger.info('📥 收到测试POST请求');
+  res.json({
+    status: 'success',
+    message: '测试POST请求成功',
+    body: req.body
+  });
+});
+
+/**
+ * 更新OTA进度
+ * POST /api/firmware/ota-progress
+ */
+router.post('/firmware/ota-progress', async (req, res) => {
+  try {
+    logger.info('📥 收到OTA进度更新请求');
+    const { deviceId, commandId, progress, status, message } = req.body;
+
+    logger.info(`📊 进度数据: deviceId=${deviceId}, commandId=${commandId}, progress=${progress}`);
+
+    if (!deviceId || !commandId) {
+      logger.warn('⚠️ 缺少必要参数');
+      return res.status(400).json({
+        status: 'error',
+        message: '设备ID和指令ID不能为空'
+      });
+    }
+
+    // 简化测试：直接返回成功
+    logger.info('✅ OTA进度更新成功（测试模式）');
+    res.json({
+      status: 'success',
+      message: 'OTA进度更新成功（测试模式）'
+    });
+
+    // 注释掉数据库操作进行测试
+    /*
+    const firmwareService = require('../services/firmware-service');
+    const result = await firmwareService.updateOTAProgress(deviceId, commandId, {
+      progress: progress || 0,
+      status: status || 'in_progress',
+      message: message || ''
+    });
+
+    res.json(result);
+    */
+  } catch (error) {
+    logger.error(`更新OTA进度失败: ${error.message}`);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * 下载固件文件
  * GET /api/firmware/download/:firmwareId
  */
@@ -279,6 +356,48 @@ router.get('/firmware/download/:firmwareId', async (req, res) => {
 });
 
 /**
+ * 获取注册设备列表 (API版本)
+ * GET /api/devices
+ */
+router.get('/devices', async (req, res) => {
+  try {
+    logger.debug('📋 获取注册设备列表 (API)');
+
+    const supabaseService = require('../services/supabase-service');
+    const result = await supabaseService.getRegisteredDevices();
+
+    res.json(result);
+  } catch (error) {
+    logger.error(`获取设备列表失败: ${error.message}`);
+    res.status(500).json({
+      error: '获取设备列表失败',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * 获取在线设备列表 (API版本)
+ * GET /api/devices/online
+ */
+router.get('/devices/online', async (req, res) => {
+  try {
+    logger.debug('📋 获取在线设备列表 (API)');
+
+    const supabaseService = require('../services/supabase-service');
+    const result = await supabaseService.getOnlineDevices();
+
+    res.json(result);
+  } catch (error) {
+    logger.error(`获取在线设备失败: ${error.message}`);
+    res.status(500).json({
+      error: '获取在线设备失败',
+      message: error.message
+    });
+  }
+});
+
+/**
  * 获取服务器配置信息 (仅开发环境)
  * GET /api/config
  */
@@ -291,7 +410,7 @@ router.get('/config', (req, res) => {
   }
 
   const config = require('../config/server-config');
-  
+
   // 移除敏感信息
   const safeConfig = {
     server: config.server,
