@@ -291,7 +291,7 @@ static esp_err_t fetch_pending_commands(void)
 
                     // 处理每个指令
                     for (int i = 0; i < command_count; i++) {
-                        ESP_LOGI(TAG, "🔧 处理指令: %d, 类型: %d", commands[i].id, commands[i].command);
+                        ESP_LOGI(TAG, "🔧 处理指令: %" PRIu32 ", 类型: %d", commands[i].id, commands[i].command);
 
                         if (s_command_callback) {
                             s_command_callback(&commands[i]);
