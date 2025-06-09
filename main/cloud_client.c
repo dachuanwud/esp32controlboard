@@ -51,6 +51,23 @@ static char s_device_key[64] = {0};
 static bool s_auth_enabled = false;
 
 /**
+ * 内存监控和保护
+ */
+static void check_memory_usage(const char* context)
+{
+    uint32_t free_heap = esp_get_free_heap_size();
+    uint32_t min_free_heap = esp_get_minimum_free_heap_size();
+
+    if (free_heap < 30 * 1024) { // 警告阈值30KB
+        ESP_LOGW(TAG, "⚠️ [%s] 内存不足警告: 可用=%lu KB, 最小=%lu KB",
+                 context, (unsigned long)free_heap / 1024, (unsigned long)min_free_heap / 1024);
+    } else {
+        ESP_LOGD(TAG, "💾 [%s] 内存状态: 可用=%lu KB, 最小=%lu KB",
+                 context, (unsigned long)free_heap / 1024, (unsigned long)min_free_heap / 1024);
+    }
+}
+
+/**
  * HTTP事件处理函数
  */
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -93,6 +110,13 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
  */
 static esp_err_t send_http_post(const char* url, const char* data)
 {
+    // 检查可用内存
+    uint32_t free_heap = esp_get_free_heap_size();
+    if (free_heap < 50 * 1024) { // 至少需要50KB可用内存
+        ESP_LOGE(TAG, "❌ 可用内存不足 (%lu KB)，跳过HTTP请求", (unsigned long)free_heap / 1024);
+        return ESP_ERR_NO_MEM;
+    }
+
     s_response_len = 0;
     memset(s_response_buffer, 0, sizeof(s_response_buffer));
     
@@ -158,8 +182,25 @@ static void generate_device_id(char* device_id, size_t size)
  */
 static esp_err_t collect_current_status(device_status_data_t* status)
 {
+    if (!status) {
+        ESP_LOGE(TAG, "❌ 状态数据指针为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // 检查可用内存
+    uint32_t free_heap = esp_get_free_heap_size();
+    if (free_heap < 30 * 1024) { // 至少需要30KB可用内存
+        ESP_LOGW(TAG, "⚠️ 可用内存不足 (%lu KB)，跳过状态收集", (unsigned long)free_heap / 1024);
+        return ESP_ERR_NO_MEM;
+    }
+
     // 使用数据集成模块收集状态
-    return data_integration_collect_status(status);
+    esp_err_t ret = data_integration_collect_status(status);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ 数据集成收集失败: %s", esp_err_to_name(ret));
+    }
+
+    return ret;
 }
 
 /**
@@ -170,6 +211,11 @@ static void status_task(void *pvParameters)
     ESP_LOGI(TAG, "📊 状态上报任务已启动");
     ESP_LOGI(TAG, "⏰ 上报间隔: %d秒", DEVICE_STATUS_INTERVAL_MS / 1000);
 
+    // 等待系统完全初始化 - 防止启动时的内存访问冲突
+    ESP_LOGI(TAG, "⏳ 等待系统稳定...");
+    vTaskDelay(pdMS_TO_TICKS(5000)); // 等待5秒
+    ESP_LOGI(TAG, "✅ 系统稳定，开始状态上报");
+
     device_status_data_t status_data;
     uint32_t report_count = 0;
     uint32_t success_count = 0;
@@ -178,6 +224,9 @@ static void status_task(void *pvParameters)
     while (s_client_running) {
         if (wifi_manager_is_connected()) {
             ESP_LOGD(TAG, "🔄 开始第%" PRIu32 "次状态收集...", report_count + 1);
+
+            // 监控内存使用情况
+            check_memory_usage("状态上报");
 
             // 收集设备状态
             esp_err_t ret = collect_current_status(&status_data);
@@ -321,6 +370,11 @@ static void command_task(void *pvParameters)
     ESP_LOGI(TAG, "📋 指令轮询任务已启动");
     ESP_LOGI(TAG, "⏰ 轮询间隔: %d秒", COMMAND_POLL_INTERVAL_MS / 1000);
 
+    // 等待系统完全初始化 - 防止启动时的内存访问冲突
+    ESP_LOGI(TAG, "⏳ 等待系统稳定...");
+    vTaskDelay(pdMS_TO_TICKS(8000)); // 等待8秒，比状态任务晚一些
+    ESP_LOGI(TAG, "✅ 系统稳定，开始指令轮询");
+
     uint32_t poll_count = 0;
 
     while (s_client_running) {
@@ -410,9 +464,9 @@ esp_err_t cloud_client_start(void)
     s_network_status = NETWORK_DISCONNECTED;
     s_retry_count = 0;
 
-    // 创建状态上报任务
-    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 4096, 优先级: 5)");
-    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 4096, NULL, 5, &s_status_task_handle);
+    // 创建状态上报任务 (增加栈大小以支持JSON和HTTP操作)
+    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 8192, 优先级: 5)");
+    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 8192, NULL, 5, &s_status_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建状态上报任务失败");
         s_client_running = false;
@@ -420,9 +474,9 @@ esp_err_t cloud_client_start(void)
     }
     ESP_LOGI(TAG, "✅ 状态上报任务创建成功");
 
-    // 创建指令轮询任务
-    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 4096, 优先级: 5)");
-    ret = xTaskCreate(command_task, "cloud_command", 4096, NULL, 5, &s_command_task_handle);
+    // 创建指令轮询任务 (增加栈大小以支持JSON和HTTP操作)
+    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 8192, 优先级: 5)");
+    ret = xTaskCreate(command_task, "cloud_command", 8192, NULL, 5, &s_command_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建指令轮询任务失败");
         s_client_running = false;
@@ -560,7 +614,7 @@ esp_err_t cloud_client_register_device(const char* device_id, const char* device
             set_last_error("设备注册HTTP请求失败");
         }
 
-        free(json_string);
+        cJSON_free(json_string);
     } else {
         ESP_LOGE(TAG, "❌ 序列化注册JSON失败");
         s_network_status = NETWORK_ERROR;
@@ -622,7 +676,7 @@ esp_err_t cloud_client_send_status(cloud_status_t status, const char* data)
         snprintf(url, sizeof(url), "%s/device-status", CLOUD_SERVER_URL);
 
         err = send_http_post(url, json_string);
-        free(json_string);
+        cJSON_free(json_string);
     }
 
     cJSON_Delete(json);
@@ -937,7 +991,7 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
                 if (data_str) {
                     strncpy(commands[count].data, data_str, sizeof(commands[count].data) - 1);
                     commands[count].data[sizeof(commands[count].data) - 1] = '\0';
-                    free(data_str);
+                    cJSON_free(data_str);
                 }
             }
 
@@ -1142,7 +1196,7 @@ esp_err_t cloud_client_send_device_status(const device_status_data_t* status_dat
 
     esp_http_client_handle_t client = create_http_client(url);
     if (!client) {
-        free(json_string);
+        cJSON_free(json_string);
         ESP_LOGE(TAG, "❌ 创建HTTP客户端失败");
         set_last_error("创建HTTP客户端失败");
         s_network_status = NETWORK_ERROR;
@@ -1213,7 +1267,7 @@ esp_err_t cloud_client_send_device_status(const device_status_data_t* status_dat
     }
 
     esp_http_client_cleanup(client);
-    free(json_string);
+    cJSON_free(json_string);
 
     if (ret == ESP_OK) {
         ESP_LOGD(TAG, "🎉 状态上报流程完成");
@@ -1356,7 +1410,7 @@ __attribute__((unused)) static esp_err_t register_device_enhanced(void)
     // 发送注册请求
     esp_http_client_handle_t client = create_http_client(CLOUD_SERVER_URL "/register-device");
     if (!client) {
-        free(json_string);
+        cJSON_free(json_string);
         set_last_error("创建注册HTTP客户端失败");
         return ESP_FAIL;
     }
@@ -1392,7 +1446,7 @@ __attribute__((unused)) static esp_err_t register_device_enhanced(void)
     }
 
     esp_http_client_cleanup(client);
-    free(json_string);
+    cJSON_free(json_string);
 
     return ret;
 }
@@ -1444,7 +1498,7 @@ esp_err_t cloud_client_unregister_device(const char* reason)
         set_last_error("设备注销HTTP请求失败");
     }
 
-    free(json_string);
+    cJSON_free(json_string);
     return ret;
 }
 
@@ -1555,7 +1609,7 @@ esp_err_t cloud_client_send_command_feedback(const char* command_id, const char*
     snprintf(url, sizeof(url), "%s/api/device-commands/feedback", CLOUD_SERVER_URL);
 
     esp_err_t err = send_http_post(url, json_string);
-    free(json_string);
+    cJSON_free(json_string);
 
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "✅ 指令反馈发送成功");
@@ -1618,7 +1672,7 @@ esp_err_t cloud_client_send_ota_progress(const char* command_id, uint8_t progres
     ESP_LOGD(TAG, "📊 发送OTA进度: %d%% - %s", progress, message ? message : "");
 
     esp_err_t err = send_http_post(url, json_string);
-    free(json_string);
+    cJSON_free(json_string);
 
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "发送OTA进度失败: %s", esp_err_to_name(err));

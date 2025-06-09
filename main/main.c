@@ -55,11 +55,41 @@ typedef struct {
 } motor_cmd_t;
 
 // 全局状态变量（用于Web接口）
-uint16_t g_last_sbus_channels[16] = {0};
+uint16_t g_last_sbus_channels[16] = {1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
 int8_t g_last_motor_left = 0;
 int8_t g_last_motor_right = 0;
 uint32_t g_last_sbus_update = 0;
 uint32_t g_last_motor_update = 0;
+
+// 确保全局变量在使用前已正确初始化
+static bool g_globals_initialized = false;
+
+/**
+ * 初始化全局变量
+ */
+static void init_global_variables(void)
+{
+    if (g_globals_initialized) {
+        return;
+    }
+
+    // 初始化SBUS通道为安全的中位值
+    for (int i = 0; i < 16; i++) {
+        g_last_sbus_channels[i] = 1500; // SBUS中位值
+    }
+    g_last_sbus_channels[2] = 1000; // 油门通道初始化为最低值
+
+    // 初始化电机状态
+    g_last_motor_left = 0;
+    g_last_motor_right = 0;
+
+    // 初始化时间戳
+    g_last_sbus_update = 0;
+    g_last_motor_update = 0;
+
+    g_globals_initialized = true;
+    ESP_LOGI(TAG, "✅ 全局变量初始化完成");
+}
 
 /**
  * 获取SBUS状态回调函数
@@ -107,6 +137,11 @@ static esp_err_t data_integration_get_sbus_status_callback(bool* connected, uint
         return ESP_ERR_INVALID_ARG;
     }
 
+    // 确保全局变量已初始化
+    if (!g_globals_initialized) {
+        init_global_variables();
+    }
+
     // 检查数据是否新鲜（5秒内更新过）
     uint32_t current_time = xTaskGetTickCount();
     uint32_t time_diff = current_time - g_last_sbus_update;
@@ -151,6 +186,11 @@ static esp_err_t data_integration_get_motor_status_callback(int* left_speed, int
     if (!left_speed || !right_speed || !last_time) {
         ESP_LOGE(TAG, "❌ 电机回调参数无效");
         return ESP_ERR_INVALID_ARG;
+    }
+
+    // 确保全局变量已初始化
+    if (!g_globals_initialized) {
+        init_global_variables();
     }
 
     *left_speed = g_last_motor_left;
@@ -389,21 +429,47 @@ static void wifi_management_task(void *pvParameters)
         return;
     }
 
+    // 等待Wi-Fi管理器完全初始化
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     // 尝试连接到默认Wi-Fi网络
     ESP_LOGI(TAG, "🔗 Attempting to connect to Wi-Fi: %s", DEFAULT_WIFI_SSID);
-    esp_err_t ret = wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
 
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "⚠️ 初始Wi-Fi连接失败，将在后台重试");
-        ESP_LOGI(TAG, "🔄 Wi-Fi管理器将在后台自动重试连接");
+    // 重试连接逻辑
+    int connection_attempts = 0;
+    const int max_attempts = 3;
+    esp_err_t ret = ESP_FAIL;
+
+    while (connection_attempts < max_attempts && !wifi_manager_is_connected()) {
+        connection_attempts++;
+        ESP_LOGI(TAG, "🔄 Connection attempt %d/%d", connection_attempts, max_attempts);
+
+        // 如果不是第一次尝试，先重置Wi-Fi状态
+        if (connection_attempts > 1) {
+            ESP_LOGI(TAG, "🔄 Resetting Wi-Fi state before retry...");
+            wifi_manager_reset();
+            vTaskDelay(pdMS_TO_TICKS(2000)); // 等待重置完成
+        }
+
+        ret = wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "✅ Wi-Fi connection successful on attempt %d", connection_attempts);
+            break;
+        } else {
+            ESP_LOGW(TAG, "⚠️ Wi-Fi connection attempt %d failed: %s",
+                     connection_attempts, esp_err_to_name(ret));
+
+            if (connection_attempts < max_attempts) {
+                ESP_LOGI(TAG, "⏳ Waiting before next attempt...");
+                vTaskDelay(pdMS_TO_TICKS(3000)); // 等待3秒后重试
+            }
+        }
     }
 
-    // 等待WiFi连接成功（最多等待30秒）
-    int wifi_wait_count = 0;
-    while (!wifi_manager_is_connected() && wifi_wait_count < 30) {
-        ESP_LOGI(TAG, "⏳ 等待WiFi连接... (%d/30秒)", wifi_wait_count + 1);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        wifi_wait_count++;
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGE(TAG, "❌ Failed to connect to Wi-Fi after %d attempts", max_attempts);
+        ESP_LOGI(TAG, "🔄 Wi-Fi管理器将在后台继续重试连接");
     }
 
     if (wifi_manager_is_connected()) {
@@ -462,6 +528,10 @@ static void wifi_management_task(void *pvParameters)
                 ESP_LOGI(TAG, "✅ 设备注册到云服务器成功");
                 ESP_LOGI(TAG, "🎉 设备已成功连接到Supabase数据库");
 
+                // 临时禁用云客户端启动以测试系统稳定性
+                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
+                ESP_LOGI(TAG, "🔧 如需启用，请修改main.c中的相关代码");
+                /*
                 // 启动云客户端
                 ESP_LOGI(TAG, "🚀 启动云客户端后台服务...");
                 if (cloud_client_start() == ESP_OK) {
@@ -470,8 +540,11 @@ static void wifi_management_task(void *pvParameters)
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端启动失败");
                 }
+                */
             } else {
                 ESP_LOGW(TAG, "⚠️ 设备注册失败，将在后台重试");
+                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
+                /*
                 ESP_LOGI(TAG, "🔄 启动云客户端进行后台重试...");
                 // 即使注册失败也启动云客户端，它会在后台重试
                 if (cloud_client_start() == ESP_OK) {
@@ -479,6 +552,7 @@ static void wifi_management_task(void *pvParameters)
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端后台重试服务启动失败");
                 }
+                */
             }
         } else {
             ESP_LOGE(TAG, "❌ 云客户端初始化失败");
@@ -501,14 +575,57 @@ static void wifi_management_task(void *pvParameters)
     }
 
     static bool cloud_client_initialized = false;
+    static uint32_t last_wifi_check_time = 0;
+    static uint32_t wifi_disconnect_count = 0;
+    const uint32_t WIFI_CHECK_INTERVAL_MS = 60000; // 增加到60秒检查一次
+    const uint32_t MIN_RECONNECT_INTERVAL_MS = 120000; // 最少2分钟才能重连一次
 
     while (1) {
-        // 检查Wi-Fi连接状态
-        if (!wifi_manager_is_connected()) {
-            ESP_LOGW(TAG, "📡 Wi-Fi disconnected, attempting to reconnect...");
-            wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
-            cloud_client_initialized = false;  // 重置云客户端状态
-        } else if (!cloud_client_initialized && wifi_manager_is_connected()) {
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        // 只在指定间隔内检查Wi-Fi状态
+        if (current_time - last_wifi_check_time >= WIFI_CHECK_INTERVAL_MS) {
+            last_wifi_check_time = current_time;
+
+            // 检查Wi-Fi连接状态
+            if (!wifi_manager_is_connected()) {
+                wifi_disconnect_count++;
+                ESP_LOGW(TAG, "📡 Wi-Fi disconnected (count: %" PRIu32 "), checking if reconnection needed...", wifi_disconnect_count);
+
+                // 只有在足够的时间间隔后才尝试重连，避免频繁重连
+                static uint32_t last_reconnect_time = 0;
+                if (current_time - last_reconnect_time >= MIN_RECONNECT_INTERVAL_MS) {
+                    ESP_LOGI(TAG, "🔄 Attempting Wi-Fi reconnection...");
+                    last_reconnect_time = current_time;
+
+                    // 重置Wi-Fi状态并重新连接
+                    wifi_manager_reset();
+                    vTaskDelay(pdMS_TO_TICKS(2000)); // 等待重置完成
+
+                    esp_err_t reconnect_ret = wifi_manager_connect(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+                    if (reconnect_ret != ESP_OK) {
+                        ESP_LOGE(TAG, "❌ Wi-Fi reconnection failed: %s", esp_err_to_name(reconnect_ret));
+                    } else {
+                        ESP_LOGI(TAG, "✅ Wi-Fi reconnection successful");
+                        wifi_disconnect_count = 0; // 重置断开计数
+                    }
+
+                    cloud_client_initialized = false;  // 重置云客户端状态
+                } else {
+                    ESP_LOGD(TAG, "⏳ Waiting for reconnection interval (%" PRIu32 "s remaining)",
+                             (MIN_RECONNECT_INTERVAL_MS - (current_time - last_reconnect_time)) / 1000);
+                }
+            } else {
+                // Wi-Fi已连接，重置断开计数
+                if (wifi_disconnect_count > 0) {
+                    ESP_LOGI(TAG, "✅ Wi-Fi connection restored");
+                    wifi_disconnect_count = 0;
+                }
+            }
+        }
+
+        // 检查云客户端初始化状态
+        if (!cloud_client_initialized && wifi_manager_is_connected()) {
             // WiFi已连接但云客户端未初始化，尝试初始化云客户端
             ESP_LOGI(TAG, "🔄 WiFi重连成功，初始化云客户端...");
 
@@ -539,17 +656,22 @@ static void wifi_management_task(void *pvParameters)
                     ESP_LOGW(TAG, "⚠️ 设备重连注册失败，将在后台重试");
                 }
 
+                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
+                // 即使云客户端被禁用，也要标记为已初始化，避免重复初始化
+                cloud_client_initialized = true;
+                /*
                 if (cloud_client_start() == ESP_OK) {
                     ESP_LOGI(TAG, "✅ 云客户端启动成功");
                     cloud_client_initialized = true;
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端启动失败");
                 }
+                */
             }
         }
 
-        // 每30秒检查一次连接状态
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        // 每10秒循环一次，但Wi-Fi检查基于时间间隔控制
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
@@ -762,6 +884,13 @@ static void app_timer_init(void)
 void app_main(void)
 {
     // ====================================================================
+    // 系统初始化
+    // ====================================================================
+
+    // 初始化全局变量（必须在其他初始化之前）
+    init_global_variables();
+
+    // ====================================================================
     // 日志系统配置
     // ====================================================================
 
@@ -913,11 +1042,11 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create status monitor task");
     }
 
-    // Wi-Fi管理任务 - 中优先级
+    // Wi-Fi管理任务 - 中优先级 (增加栈大小以支持云客户端初始化)
     xReturned = xTaskCreate(
         wifi_management_task,
         "wifi_task",
-        4096,
+        8192,  // 增加栈大小到8KB
         NULL,
         8,   // 中优先级
         &wifi_task_handle);
@@ -925,11 +1054,11 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create Wi-Fi management task");
     }
 
-    // HTTP服务器任务 - 中优先级
+    // HTTP服务器任务 - 中优先级 (增加栈大小以支持HTTP处理)
     xReturned = xTaskCreate(
         http_server_task,
         "http_task",
-        4096,
+        6144,  // 增加栈大小到6KB
         NULL,
         7,   // 中优先级
         &http_task_handle);

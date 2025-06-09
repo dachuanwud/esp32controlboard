@@ -11,7 +11,10 @@
 #define WIFI_SSID_MAX_LEN       32
 #define WIFI_PASSWORD_MAX_LEN   64
 #define WIFI_RETRY_MAX          5
-#define WIFI_CONNECT_TIMEOUT_MS 10000
+#define WIFI_CONNECT_TIMEOUT_MS 15000  // 增加到15秒超时
+
+// Wi-Fi调试配置
+#define WIFI_DEBUG_ENABLED      1
 
 // Wi-Fi状态枚举
 typedef enum {
@@ -82,6 +85,20 @@ const char* wifi_manager_get_ip_address(void);
  * @return RSSI值(dBm)，如果未连接返回0
  */
 int8_t wifi_manager_get_rssi(void);
+
+/**
+ * 重置Wi-Fi连接状态
+ * @return ESP_OK=成功
+ */
+esp_err_t wifi_manager_reset(void);
+
+/**
+ * 获取详细的Wi-Fi调试信息
+ * @param buffer 输出缓冲区
+ * @param buffer_size 缓冲区大小
+ * @return ESP_OK=成功
+ */
+esp_err_t wifi_manager_get_debug_info(char* buffer, size_t buffer_size);
 
 /**
  * 启动Wi-Fi AP模式（用于配置）
