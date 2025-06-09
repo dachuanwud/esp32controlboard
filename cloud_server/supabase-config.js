@@ -432,6 +432,46 @@ class SupabaseDeviceService {
       this.client.removeChannel(subscription)
     }
   }
+
+  /**
+   * 更新指令状态
+   */
+  async updateCommandStatus(commandId, status, message = null) {
+    try {
+      console.log(`📊 更新指令状态: ${commandId} -> ${status}`)
+
+      const updateData = {
+        status: status
+      }
+
+      if (message) {
+        updateData.error_message = message
+      }
+
+      if (status === 'completed') {
+        updateData.completed_at = new Date().toISOString()
+      } else if (status === 'processing') {
+        updateData.sent_at = new Date().toISOString()
+      }
+
+      const { data, error } = await this.admin
+        .from('device_commands')
+        .update(updateData)
+        .eq('id', commandId)
+        .select()
+
+      if (error) {
+        console.error('更新指令状态失败:', error)
+        throw error
+      }
+
+      console.log(`✅ 指令状态更新成功: ${commandId}`)
+      return data
+    } catch (error) {
+      console.error('更新指令状态时发生错误:', error)
+      throw error
+    }
+  }
 }
 
 // 创建全局实例

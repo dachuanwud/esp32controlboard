@@ -541,6 +541,18 @@ esp_err_t cloud_client_register_device(const char* device_id, const char* device
             s_network_status = NETWORK_CONNECTED;
             s_retry_count = 0;
             ESP_LOGI(TAG, "🎉 设备已成功注册到Supabase数据库");
+
+            // 检查是否是OTA升级后的首次启动
+            if (ota_manager_check_rollback_required()) {
+                ESP_LOGI(TAG, "📤 检测到OTA升级后首次启动，发送固件版本更新通知");
+                // 延迟发送，确保设备注册完成
+                vTaskDelay(pdMS_TO_TICKS(1000));
+
+                // 发送固件版本更新通知
+                char version_msg[128];
+                snprintf(version_msg, sizeof(version_msg), "固件已成功升级到版本 %s", s_device_info.firmware_version);
+                cloud_client_send_status(CLOUD_STATUS_ONLINE, version_msg);
+            }
         } else {
             ESP_LOGE(TAG, "❌ 设备注册失败，HTTP错误");
             s_device_info.status = CLOUD_STATUS_ERROR;
@@ -837,9 +849,17 @@ static esp_err_t download_and_install_firmware(const char* url, uint32_t expecte
         ret = ota_manager_end();
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "✅ 固件下载和安装成功");
+
+            // 发送OTA完成状态到云端
+            ESP_LOGI(TAG, "📤 发送OTA完成状态到云端");
+            cloud_client_send_command_feedback(s_current_command_id, "completed", "OTA升级成功完成，即将重启");
+
+            // 等待状态发送完成
+            vTaskDelay(pdMS_TO_TICKS(2000));
+
             ESP_LOGI(TAG, "🔄 系统将在3秒后重启以应用新固件");
 
-            // 延迟重启，让日志输出完成
+            // 延迟重启，让状态发送和日志输出完成
             vTaskDelay(pdMS_TO_TICKS(3000));
             esp_restart();
         } else {

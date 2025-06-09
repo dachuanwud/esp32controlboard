@@ -290,6 +290,67 @@ router.post('/firmware/test-post', (req, res) => {
 });
 
 /**
+ * 获取设备待处理指令
+ * GET /api/device-commands/:deviceId/pending
+ */
+router.get('/device-commands/:deviceId/pending', async (req, res) => {
+  try {
+    const deviceId = req.params.deviceId;
+    logger.info(`📥 获取设备 ${deviceId} 的待处理指令`);
+
+    const supabaseService = require('../services/supabase-service');
+    const commands = await supabaseService.getDeviceCommands(deviceId);
+
+    res.json({
+      status: 'success',
+      commands: commands || []
+    });
+  } catch (error) {
+    logger.error(`获取设备指令失败: ${error.message}`);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * 设备指令反馈
+ * POST /api/device-commands/feedback
+ */
+router.post('/device-commands/feedback', async (req, res) => {
+  try {
+    logger.info('📥 收到设备指令反馈');
+    const { commandId, deviceId, status, message, progress } = req.body;
+
+    logger.info(`📊 反馈数据: deviceId=${deviceId}, commandId=${commandId}, status=${status}`);
+
+    if (!deviceId || !commandId) {
+      logger.warn('⚠️ 缺少必要参数');
+      return res.status(400).json({
+        status: 'error',
+        message: '设备ID和指令ID不能为空'
+      });
+    }
+
+    const supabaseService = require('../services/supabase-service');
+    await supabaseService.updateCommandStatus(commandId, status, message);
+
+    logger.info('✅ 指令反馈处理成功');
+    res.json({
+      status: 'success',
+      message: '指令反馈处理成功'
+    });
+  } catch (error) {
+    logger.error(`处理指令反馈失败: ${error.message}`);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * 更新OTA进度
  * POST /api/firmware/ota-progress
  */
@@ -308,11 +369,14 @@ router.post('/firmware/ota-progress', async (req, res) => {
       });
     }
 
-    // 简化测试：直接返回成功
-    logger.info('✅ OTA进度更新成功（测试模式）');
+    // 更新指令状态和进度
+    const supabaseService = require('../services/supabase-service');
+    await supabaseService.updateCommandStatus(commandId, status, message);
+
+    logger.info('✅ OTA进度更新成功');
     res.json({
       status: 'success',
-      message: 'OTA进度更新成功（测试模式）'
+      message: 'OTA进度更新成功'
     });
 
     // 注释掉数据库操作进行测试

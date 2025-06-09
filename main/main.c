@@ -843,9 +843,12 @@ void app_main(void)
     // 检查是否需要回滚
     if (ota_manager_check_rollback_required()) {
         ESP_LOGW(TAG, "⚠️ Firmware pending verification, will auto-rollback in 30s if not validated");
-        // 在实际应用中，这里可以启动一个定时器来自动验证固件
-        // 目前我们直接标记为有效
+        ESP_LOGI(TAG, "✅ 新固件启动成功，标记为有效版本");
         ota_manager_mark_valid();
+
+        // 延迟一段时间后发送固件版本更新通知
+        // 这样可以确保网络连接已建立
+        ESP_LOGI(TAG, "📤 将在网络连接后发送固件版本更新通知");
     }
 
     ESP_LOGI(TAG, "System initialized");

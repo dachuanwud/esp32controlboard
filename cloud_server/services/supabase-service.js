@@ -201,6 +201,40 @@ class SupabaseService {
       throw error;
     }
   }
+
+  /**
+   * 获取设备指令（兼容旧API）
+   */
+  async getDeviceCommands(deviceId) {
+    try {
+      logger.debug(`📋 获取设备 ${deviceId} 的指令`);
+      return await this.getPendingCommands(deviceId);
+    } catch (error) {
+      logger.error(`❌ 获取设备指令失败: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 更新指令状态
+   */
+  async updateCommandStatus(commandId, status, message = null) {
+    try {
+      logger.info(`📊 更新指令状态: ${commandId} -> ${status}`);
+
+      const result = await this.deviceService.updateCommandStatus(commandId, status, message);
+
+      logger.info(`✅ 指令状态更新成功: ${commandId}`);
+      return {
+        status: 'success',
+        message: '指令状态已更新',
+        data: result
+      };
+    } catch (error) {
+      logger.error(`❌ 更新指令状态失败: ${error.message}`);
+      throw error;
+    }
+  }
 }
 
 module.exports = new SupabaseService();
