@@ -229,8 +229,8 @@ static void status_task(void *pvParameters)
             ESP_LOGW(TAG, "📡 Wi-Fi未连接，跳过状态上报");
         }
 
-        // 等待下次上报
-        ESP_LOGD(TAG, "⏳ 等待%d秒后进行下次上报...", DEVICE_STATUS_INTERVAL_MS / 1000);
+        // 等待下次上报 - 减少日志频率
+        ESP_LOGV(TAG, "⏳ 等待%d秒后进行下次上报...", DEVICE_STATUS_INTERVAL_MS / 1000);
         vTaskDelay(pdMS_TO_TICKS(DEVICE_STATUS_INTERVAL_MS));
     }
 
@@ -326,15 +326,15 @@ static void command_task(void *pvParameters)
     while (s_client_running) {
         if (wifi_manager_is_connected() && s_client_connected) {
             poll_count++;
-            ESP_LOGD(TAG, "🔍 第%" PRIu32 "次指令轮询...", poll_count);
+            ESP_LOGV(TAG, "🔍 第%" PRIu32 "次指令轮询...", poll_count);
 
             // 主动获取待处理指令
             esp_err_t ret = fetch_pending_commands();
             if (ret != ESP_OK) {
-                ESP_LOGD(TAG, "⚠️ 指令轮询失败: %s", esp_err_to_name(ret));
+                ESP_LOGV(TAG, "⚠️ 指令轮询失败: %s", esp_err_to_name(ret));
             }
         } else {
-            ESP_LOGD(TAG, "📡 网络未连接，跳过指令轮询");
+            ESP_LOGV(TAG, "📡 网络未连接，跳过指令轮询");
         }
 
         vTaskDelay(pdMS_TO_TICKS(COMMAND_POLL_INTERVAL_MS));

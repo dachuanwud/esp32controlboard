@@ -197,9 +197,34 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
         channel[i] = (channel[i] - 282) * 5 / 8 + 1050;
     }
 
-    // 打印SBUS通道值 - 对应手柄操作
-    ESP_LOGI(TAG, "SBUS CH0:%4u CH1:%4u CH2:%4u CH3:%4u CH6:%4u CH7:%4u",
-             channel[0], channel[1], channel[2], channel[3], channel[6], channel[7]);
+    // 只在调试模式下打印SBUS通道值，或者关键通道有显著变化时打印
+    static uint16_t last_channels[8] = {0};
+    static bool first_sbus_data = true;
+    bool significant_change = false;
+
+    // 检查关键通道是否有显著变化（阈值为20）
+    uint8_t key_ch[] = {0, 2, 3, 6, 7};
+    for (int i = 0; i < 5; i++) {
+        uint8_t ch = key_ch[i];
+        if (abs((int16_t)channel[ch] - (int16_t)last_channels[ch]) > 20) {
+            significant_change = true;
+            break;
+        }
+    }
+
+    if (first_sbus_data || significant_change) {
+        ESP_LOGI(TAG, "SBUS CH0:%4u CH2:%4u CH3:%4u CH6:%4u CH7:%4u",
+                 channel[0], channel[2], channel[3], channel[6], channel[7]);
+
+        // 更新保存的通道值
+        for (int i = 0; i < 8; i++) {
+            if (i < 5) last_channels[key_ch[i]] = channel[key_ch[i]];
+        }
+        first_sbus_data = false;
+    } else {
+        ESP_LOGD(TAG, "SBUS CH0:%4u CH2:%4u CH3:%4u CH6:%4u CH7:%4u",
+                 channel[0], channel[2], channel[3], channel[6], channel[7]);
+    }
 
     return 0;
 }

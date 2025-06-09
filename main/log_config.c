@@ -21,18 +21,18 @@ void configure_logging(void)
     
     // 设置默认日志级别
     esp_log_level_set("*", ESP_LOG_INFO);
-    
-    // 核心模块详细日志
+
+    // 核心模块适中日志级别
     esp_log_level_set("CLOUD_CLIENT", ESP_LOG_INFO);
-    esp_log_level_set("DATA_INTEGRATION", ESP_LOG_INFO);
+    esp_log_level_set("DATA_INTEGRATION", ESP_LOG_WARN);  // 降低数据集成模块日志级别
     esp_log_level_set("WIFI_MANAGER", ESP_LOG_INFO);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_INFO);
     esp_log_level_set("MAIN", ESP_LOG_INFO);
-    
-    // 系统模块适中日志
-    esp_log_level_set("SBUS", ESP_LOG_WARN);
-    esp_log_level_set("CAN", ESP_LOG_WARN);
-    esp_log_level_set("MOTOR", ESP_LOG_WARN);
+
+    // 控制模块优化日志级别
+    esp_log_level_set("SBUS", ESP_LOG_INFO);        // 提升SBUS日志级别，便于调试
+    esp_log_level_set("DRV_KEYA", ESP_LOG_WARN);    // 降低CAN驱动日志级别
+    esp_log_level_set("CHAN_PARSE", ESP_LOG_INFO);  // 保持通道解析日志级别
     esp_log_level_set("OTA", ESP_LOG_INFO);
     
     // 减少噪音日志
@@ -62,11 +62,11 @@ void enable_debug_logging(void)
     esp_log_level_set("WIFI_MANAGER", ESP_LOG_DEBUG);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_DEBUG);
     esp_log_level_set("MAIN", ESP_LOG_DEBUG);
-    
-    // 业务模块调试级别
-    esp_log_level_set("SBUS", ESP_LOG_INFO);
-    esp_log_level_set("CAN", ESP_LOG_INFO);
-    esp_log_level_set("MOTOR", ESP_LOG_INFO);
+
+    // 控制模块调试级别
+    esp_log_level_set("SBUS", ESP_LOG_DEBUG);
+    esp_log_level_set("DRV_KEYA", ESP_LOG_DEBUG);
+    esp_log_level_set("CHAN_PARSE", ESP_LOG_DEBUG);
     
     ESP_LOGI(TAG, "✅ 调试日志已启用");
 }
@@ -89,11 +89,11 @@ void enable_production_logging(void)
     esp_log_level_set("OTA", ESP_LOG_INFO);
     
     // 其他模块只显示警告和错误
-    esp_log_level_set("DATA_INTEGRATION", ESP_LOG_WARN);
+    esp_log_level_set("DATA_INTEGRATION", ESP_LOG_ERROR);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_WARN);
-    esp_log_level_set("SBUS", ESP_LOG_ERROR);
-    esp_log_level_set("CAN", ESP_LOG_ERROR);
-    esp_log_level_set("MOTOR", ESP_LOG_ERROR);
+    esp_log_level_set("SBUS", ESP_LOG_WARN);        // 保持SBUS警告级别，便于故障诊断
+    esp_log_level_set("DRV_KEYA", ESP_LOG_ERROR);   // CAN驱动只显示错误
+    esp_log_level_set("CHAN_PARSE", ESP_LOG_WARN);  // 通道解析保持警告级别
     
     ESP_LOGI(TAG, "✅ 生产环境日志已启用");
 }

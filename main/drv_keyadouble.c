@@ -53,10 +53,12 @@ static void keya_send_data(uint32_t id, uint8_t* data)
     // 发送消息 - 不等待ACK，立即发送
     esp_err_t result = twai_transmit(&message, 0);  // 超时设为0，不等待
     if (result != ESP_OK) {
-        ESP_LOGD(TAG, "CAN send result: %s", esp_err_to_name(result));
-
-        // 只在严重错误时打印状态
-        if (result != ESP_ERR_TIMEOUT) {
+        // 只在严重错误时打印详细信息，超时错误降级为调试级别
+        if (result == ESP_ERR_TIMEOUT) {
+            ESP_LOGD(TAG, "CAN send timeout (normal in no-ACK mode)");
+        } else {
+            ESP_LOGW(TAG, "CAN send error: %s", esp_err_to_name(result));
+            // 只在严重错误时打印状态
             twai_status_info_t status_info;
             if (twai_get_status_info(&status_info) == ESP_OK) {
                 ESP_LOGW(TAG, "CAN Status - State: %" PRIu32 ", TX Error: %" PRIu32 ", RX Error: %" PRIu32,
@@ -65,27 +67,19 @@ static void keya_send_data(uint32_t id, uint8_t* data)
         }
     }
 
-    // 打印发送的CAN数据(调试用)
-    char buffer[100];
-    sprintf(buffer, "CAN:%08" PRIX32 ":", id);
-    printf("%s", buffer);
-    for (int i = 0; i < 8; i++) {
-        sprintf(buffer, "%02X ", data[i]);
-        printf("%s", buffer);
-    }
-    printf("\\r\\n");
+    // 只在调试模式下打印详细的CAN数据
+    ESP_LOGD(TAG, "CAN TX: %08" PRIX32 " [%02X %02X %02X %02X %02X %02X %02X %02X]",
+             id, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
 
-    // 打印速度命令 (0x23 0x00 0x20 channel speed_bytes)
+    // 只在速度命令时打印简化的速度信息 (0x23 0x00 0x20 channel speed_bytes)
     if (data[0] == 0x23 && data[1] == 0x00 && data[2] == 0x20) {
         int32_t sp_value_tx = ((int32_t)data[4] << 24) |
                              ((int32_t)data[5] << 16) |
                              ((int32_t)data[6] << 8) |
                              ((int32_t)data[7]);
         int8_t actual_speed = (int8_t)(sp_value_tx / 100);
-        char speed_buffer[50];
         uint8_t channel = data[3];
-        sprintf(speed_buffer, "Speed CMD Ch%d: %d\\r\\n", channel, actual_speed);
-        printf("%s", speed_buffer);
+        ESP_LOGD(TAG, "Motor Ch%d speed: %d", channel, actual_speed);
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));

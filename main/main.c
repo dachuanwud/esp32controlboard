@@ -11,6 +11,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include "esp_app_desc.h"
+#include "esp_timer.h"
 
 static const char *TAG = "MAIN";
 
@@ -644,7 +645,16 @@ static void status_monitor_task(void *pvParameters)
 
         // 系统状态监控任务保持运行，但不进行LED显示
         // 可以在此处添加其他系统状态监控逻辑
-        ESP_LOGD(TAG, "系统状态监控中...");
+
+        // 减少状态监控日志频率，每30秒输出一次系统状态
+        static uint32_t status_count = 0;
+        status_count++;
+
+        if (status_count % 60 == 0) {  // 60 * 500ms = 30秒
+            ESP_LOGI(TAG, "📊 System status - Heap: %" PRIu32 " bytes, Uptime: %" PRIu32 "s",
+                     esp_get_free_heap_size(),
+                     (uint32_t)(esp_timer_get_time() / 1000000));
+        }
 
         // 延时500ms
         vTaskDelay(pdMS_TO_TICKS(500));

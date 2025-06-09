@@ -48,7 +48,7 @@ static bool check_channel_changed(uint16_t* ch_val)
         uint8_t ch = key_channels[i];
         // 如果是第一次运行，last_ch_val[ch]为0，不显示变化信息
         if (last_ch_val[ch] != 0 && abs((int16_t)ch_val[ch] - (int16_t)last_ch_val[ch]) > CHANNEL_THRESHOLD) {
-            ESP_LOGI(TAG, "📈 Channel %d changed: %d → %d (diff: %d)",
+            ESP_LOGD(TAG, "📈 Channel %d changed: %d → %d (diff: %d)",
                      ch, last_ch_val[ch], ch_val[ch],
                      abs((int16_t)ch_val[ch] - (int16_t)last_ch_val[ch]));
             changed = true;
@@ -115,56 +115,89 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         if (first_run) {
             ESP_LOGI(TAG, "🚀 First run - initializing track vehicle control");
             first_run = false;
-        } else {
-            ESP_LOGI(TAG, "🎮 Channel values changed - updating track control");
         }
 
         int8_t sp_fb = chg_val(ch_val[2]); // 前后分量，向前>0
         int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
 
-        if (ch_val[6] == 1950) {
-            // 启动单手模式，仅用左边拨杆控制
-            sp_lr = chg_val(ch_val[3]); // 左右分量，向右>0
-            ESP_LOGI(TAG, "🤟 Single-hand mode activated");
+        // 记录特殊模式状态变化
+        static bool last_single_hand_mode = false;
+        static bool last_low_speed_mode = false;
+        bool current_single_hand = (ch_val[6] == 1950);
+        bool current_low_speed = (ch_val[7] == 1950);
+
+        if (current_single_hand != last_single_hand_mode) {
+            ESP_LOGI(TAG, "🤟 Single-hand mode: %s", current_single_hand ? "ON" : "OFF");
+            last_single_hand_mode = current_single_hand;
         }
 
-        if (ch_val[7] == 1950) {
-            // 启动低速模式，速度减半
+        if (current_low_speed != last_low_speed_mode) {
+            ESP_LOGI(TAG, "🐌 Low speed mode: %s", current_low_speed ? "ON" : "OFF");
+            last_low_speed_mode = current_low_speed;
+        }
+
+        if (current_single_hand) {
+            sp_lr = chg_val(ch_val[3]); // 左右分量，向右>0
+        }
+
+        if (current_low_speed) {
             sp_fb /= 2;
             sp_lr /= 2;
-            ESP_LOGI(TAG, "🐌 Low speed mode activated");
         }
 
-        ESP_LOGI(TAG, "🎯 Control values - FB:%d LR:%d", sp_fb, sp_lr);
+        ESP_LOGD(TAG, "🎯 Control values - FB:%d LR:%d", sp_fb, sp_lr);
 
         // 履带车差速控制逻辑
+        static int8_t last_left_speed = 0, last_right_speed = 0;
+        int8_t left_speed, right_speed;
+
         if (sp_fb == 0) {
             if (sp_lr == 0) {
                 // 停止
-                ESP_LOGI(TAG, "⏹️ STOP");
-                intf_move(0, 0);
+                left_speed = 0;
+                right_speed = 0;
+                if (last_left_speed != 0 || last_right_speed != 0) {
+                    ESP_LOGI(TAG, "⏹️ STOP");
+                }
             } else {
                 // 原地转向
-                ESP_LOGI(TAG, "🔄 TURN IN PLACE - LR:%d", sp_lr);
-                intf_move(sp_lr, (-1) * sp_lr);
+                left_speed = sp_lr;
+                right_speed = (-1) * sp_lr;
+                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                    ESP_LOGI(TAG, "🔄 TURN IN PLACE - LR:%d", sp_lr);
+                }
             }
         } else {
             if (sp_lr == 0) {
                 // 前进或后退
-                ESP_LOGI(TAG, "%s STRAIGHT - Speed:%d", sp_fb > 0 ? "⬆️ FORWARD" : "⬇️ BACKWARD", sp_fb);
-                intf_move(sp_fb, sp_fb);
+                left_speed = sp_fb;
+                right_speed = sp_fb;
+                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                    ESP_LOGI(TAG, "%s STRAIGHT - Speed:%d", sp_fb > 0 ? "⬆️ FORWARD" : "⬇️ BACKWARD", sp_fb);
+                }
             } else if (sp_lr > 0) {
                 // 差速右转
-                int8_t right_speed = cal_offset(sp_fb, sp_lr);
-                ESP_LOGI(TAG, "↗️ DIFFERENTIAL RIGHT - Left:%d Right:%d", sp_fb, right_speed);
-                intf_move(sp_fb, right_speed);
+                left_speed = sp_fb;
+                right_speed = cal_offset(sp_fb, sp_lr);
+                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                    ESP_LOGI(TAG, "↗️ DIFFERENTIAL RIGHT - Left:%d Right:%d", left_speed, right_speed);
+                }
             } else {
                 // 差速左转
-                int8_t left_speed = cal_offset(sp_fb, sp_lr);
-                ESP_LOGI(TAG, "↖️ DIFFERENTIAL LEFT - Left:%d Right:%d", left_speed, sp_fb);
-                intf_move(left_speed, sp_fb);
+                left_speed = cal_offset(sp_fb, sp_lr);
+                right_speed = sp_fb;
+                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                    ESP_LOGI(TAG, "↖️ DIFFERENTIAL LEFT - Left:%d Right:%d", left_speed, right_speed);
+                }
             }
         }
+
+        // 执行电机控制
+        intf_move(left_speed, right_speed);
+
+        // 更新上次速度值
+        last_left_speed = left_speed;
+        last_right_speed = right_speed;
 
         // 更新保存的通道值
         update_last_channels(ch_val);
