@@ -528,11 +528,7 @@ static void wifi_management_task(void *pvParameters)
                 ESP_LOGI(TAG, "✅ 设备注册到云服务器成功");
                 ESP_LOGI(TAG, "🎉 设备已成功连接到Supabase数据库");
 
-                // 临时禁用云客户端启动以测试系统稳定性
-                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
-                ESP_LOGI(TAG, "🔧 如需启用，请修改main.c中的相关代码");
-                /*
-                // 启动云客户端
+                // 启动云客户端后台服务
                 ESP_LOGI(TAG, "🚀 启动云客户端后台服务...");
                 if (cloud_client_start() == ESP_OK) {
                     ESP_LOGI(TAG, "✅ 云客户端启动成功");
@@ -540,11 +536,8 @@ static void wifi_management_task(void *pvParameters)
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端启动失败");
                 }
-                */
             } else {
                 ESP_LOGW(TAG, "⚠️ 设备注册失败，将在后台重试");
-                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
-                /*
                 ESP_LOGI(TAG, "🔄 启动云客户端进行后台重试...");
                 // 即使注册失败也启动云客户端，它会在后台重试
                 if (cloud_client_start() == ESP_OK) {
@@ -552,7 +545,6 @@ static void wifi_management_task(void *pvParameters)
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端后台重试服务启动失败");
                 }
-                */
             }
         } else {
             ESP_LOGE(TAG, "❌ 云客户端初始化失败");
@@ -656,17 +648,15 @@ static void wifi_management_task(void *pvParameters)
                     ESP_LOGW(TAG, "⚠️ 设备重连注册失败，将在后台重试");
                 }
 
-                ESP_LOGI(TAG, "⚠️ 云客户端已临时禁用用于调试");
-                // 即使云客户端被禁用，也要标记为已初始化，避免重复初始化
-                cloud_client_initialized = true;
-                /*
+                // 启动云客户端
                 if (cloud_client_start() == ESP_OK) {
                     ESP_LOGI(TAG, "✅ 云客户端启动成功");
                     cloud_client_initialized = true;
                 } else {
                     ESP_LOGE(TAG, "❌ 云客户端启动失败");
+                    // 即使启动失败，也标记为已初始化，避免重复尝试
+                    cloud_client_initialized = true;
                 }
-                */
             }
         }
 

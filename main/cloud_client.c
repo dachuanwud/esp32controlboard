@@ -465,8 +465,8 @@ esp_err_t cloud_client_start(void)
     s_retry_count = 0;
 
     // 创建状态上报任务 (增加栈大小以支持JSON和HTTP操作)
-    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 8192, 优先级: 5)");
-    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 8192, NULL, 5, &s_status_task_handle);
+    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 10240, 优先级: 5)");
+    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 10240, NULL, 5, &s_status_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建状态上报任务失败");
         s_client_running = false;
@@ -474,9 +474,9 @@ esp_err_t cloud_client_start(void)
     }
     ESP_LOGI(TAG, "✅ 状态上报任务创建成功");
 
-    // 创建指令轮询任务 (增加栈大小以支持JSON和HTTP操作)
-    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 8192, 优先级: 5)");
-    ret = xTaskCreate(command_task, "cloud_command", 8192, NULL, 5, &s_command_task_handle);
+    // 创建指令轮询任务 (大幅增加栈大小以支持OTA下载和HTTP操作)
+    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 16384, 优先级: 5)");
+    ret = xTaskCreate(command_task, "cloud_command", 16384, NULL, 5, &s_command_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建指令轮询任务失败");
         s_client_running = false;
@@ -857,8 +857,8 @@ static esp_err_t download_and_install_firmware(const char* url, uint32_t expecte
     }
     ota_started = true;
 
-    // 下载并写入固件数据
-    char *buffer = malloc(4096);
+    // 下载并写入固件数据 (使用较小的缓冲区以减少内存使用)
+    char *buffer = malloc(2048);
     if (!buffer) {
         ESP_LOGE(TAG, "❌ 分配下载缓冲区失败");
         ret = ESP_ERR_NO_MEM;
@@ -867,7 +867,7 @@ static esp_err_t download_and_install_firmware(const char* url, uint32_t expecte
 
     int total_read = 0;
     while (total_read < content_length) {
-        int data_read = esp_http_client_read(client, buffer, 4096);
+        int data_read = esp_http_client_read(client, buffer, 2048);
         if (data_read < 0) {
             ESP_LOGE(TAG, "❌ 读取固件数据失败");
             ret = ESP_FAIL;
@@ -888,8 +888,8 @@ static esp_err_t download_and_install_firmware(const char* url, uint32_t expecte
 
         total_read += data_read;
 
-        // 每64KB打印一次进度
-        if (total_read % (64 * 1024) == 0 || total_read == content_length) {
+        // 每128KB打印一次进度，减少日志输出频率
+        if (total_read % (128 * 1024) == 0 || total_read == content_length) {
             ESP_LOGI(TAG, "📥 下载进度: %d/%d bytes (%.1f%%)",
                     total_read, content_length,
                     (float)total_read * 100.0f / content_length);
