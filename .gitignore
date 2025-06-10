@@ -1,6 +1,5 @@
 # ESP-IDF 编译产生的文件
 build/
-sdkconfig
 sdkconfig.old
 
 # ESP-IDF 临时文件

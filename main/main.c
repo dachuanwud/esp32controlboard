@@ -32,7 +32,9 @@ static TaskHandle_t cmd_task_handle = NULL;
 static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t status_task_handle = NULL;
 static TaskHandle_t wifi_task_handle = NULL;
+#if ENABLE_HTTP_SERVER
 static TaskHandle_t http_task_handle = NULL;
+#endif
 // static TaskHandle_t cloud_task_handle = NULL;  // 未使用，已注释
 
 // Wi-Fi配置 - 可以通过Web界面或硬编码配置
@@ -91,6 +93,7 @@ static void init_global_variables(void)
     ESP_LOGI(TAG, "✅ 全局变量初始化完成");
 }
 
+#if ENABLE_HTTP_SERVER
 /**
  * 获取SBUS状态回调函数
  * 用于HTTP服务器获取当前SBUS状态
@@ -126,7 +129,9 @@ static bool get_motor_status(int8_t* left, int8_t* right)
     uint32_t current_time = xTaskGetTickCount();
     return (current_time - g_last_motor_update) < pdMS_TO_TICKS(5000);
 }
+#endif // ENABLE_HTTP_SERVER
 
+#if ENABLE_DATA_INTEGRATION
 /**
  * 数据集成回调函数 - 获取SBUS状态
  */
@@ -233,6 +238,7 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
 
     return ESP_OK;
 }
+#endif // ENABLE_DATA_INTEGRATION
 
 /**
  * 左刹车定时器回调函数
@@ -476,7 +482,13 @@ static void wifi_management_task(void *pvParameters)
         ESP_LOGI(TAG, "✅ Connected to Wi-Fi: %s", DEFAULT_WIFI_SSID);
         ESP_LOGI(TAG, "📍 IP Address: %s", wifi_manager_get_ip_address());
 
-        // 启动HTTP服务器
+#if CORE_FUNCTION_MODE
+        // ⚠️ 核心功能模式：暂时禁用Web功能以确保系统稳定性
+        ESP_LOGI(TAG, "🛡️ 核心功能模式已启用 - Web功能已禁用");
+        ESP_LOGI(TAG, "🎯 保留功能: SBUS接收、电机控制、CMD_VEL接收");
+        ESP_LOGI(TAG, "🚫 禁用功能: HTTP服务器、云客户端、数据集成");
+#else
+        // 启动HTTP服务器 - 已禁用
         if (http_server_start() == ESP_OK) {
             ESP_LOGI(TAG, "🌐 HTTP Server started successfully");
             ESP_LOGI(TAG, "🔗 Web interface available at: http://%s", wifi_manager_get_ip_address());
@@ -486,7 +498,7 @@ static void wifi_management_task(void *pvParameters)
 
         ESP_LOGI(TAG, "🔧 开始初始化云服务集成...");
 
-        // 初始化数据集成模块
+        // 初始化数据集成模块 - 已禁用
         ESP_LOGI(TAG, "📊 初始化数据集成模块...");
         if (data_integration_init() == ESP_OK) {
             ESP_LOGI(TAG, "✅ 数据集成模块初始化成功");
@@ -503,7 +515,7 @@ static void wifi_management_task(void *pvParameters)
             ESP_LOGE(TAG, "❌ 数据集成模块初始化失败");
         }
 
-        // 初始化并启动云客户端（增强版Supabase集成）
+        // 初始化并启动云客户端（增强版Supabase集成）- 已禁用
         ESP_LOGI(TAG, "🌐 初始化云客户端...");
         if (cloud_client_init() == ESP_OK) {
             ESP_LOGI(TAG, "✅ 云客户端初始化成功");
@@ -552,14 +564,15 @@ static void wifi_management_task(void *pvParameters)
 
         ESP_LOGI(TAG, "🎯 云服务集成初始化完成");
 
-        // 打印网络状态信息
+        // 打印网络状态信息 - 已禁用
         print_network_status();
 
-        // 打印云服务状态信息
+        // 打印云服务状态信息 - 已禁用
         print_cloud_status();
 
         // 启用调试日志（可选，用于开发阶段）
         // enable_debug_logging();
+#endif
 
     } else {
         ESP_LOGW(TAG, "⚠️ WiFi连接超时，云服务将在WiFi连接后自动启动");
@@ -616,6 +629,7 @@ static void wifi_management_task(void *pvParameters)
             }
         }
 
+#if ENABLE_CLOUD_CLIENT
         // 检查云客户端初始化状态
         if (!cloud_client_initialized && wifi_manager_is_connected()) {
             // WiFi已连接但云客户端未初始化，尝试初始化云客户端
@@ -659,12 +673,20 @@ static void wifi_management_task(void *pvParameters)
                 }
             }
         }
+#else
+        // 核心功能模式：标记云客户端为已初始化，避免重复尝试
+        if (!cloud_client_initialized && wifi_manager_is_connected()) {
+            ESP_LOGI(TAG, "🛡️ 核心功能模式：跳过云客户端初始化");
+            cloud_client_initialized = true;
+        }
+#endif
 
         // 每10秒循环一次，但Wi-Fi检查基于时间间隔控制
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
+#if ENABLE_HTTP_SERVER
 /**
  * HTTP服务器管理任务
  * 管理HTTP服务器状态和回调函数
@@ -695,6 +717,7 @@ static void http_server_task(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
+#endif // ENABLE_HTTP_SERVER
 
 /**
  * 状态监控任务
@@ -874,21 +897,36 @@ static void app_timer_init(void)
 void app_main(void)
 {
     // ====================================================================
-    // 系统初始化
+    // 系统初始化 - 增加调试信息
     // ====================================================================
 
+    printf("\n=== ESP32 Control Board Starting ===\n");
+    printf("Free heap at start: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+
     // 初始化全局变量（必须在其他初始化之前）
+    printf("Initializing global variables...\n");
     init_global_variables();
+    printf("Global variables initialized OK\n");
 
     // ====================================================================
     // 日志系统配置
     // ====================================================================
 
     // 配置日志系统
+    printf("Configuring logging system...\n");
     configure_logging();
+    printf("Logging system configured OK\n");
+
+#if ENABLE_SBUS_DEBUG
+    // 启用SBUS调试日志（用于调试SBUS接收和解析）
+    enable_sbus_debug_logging();
+    ESP_LOGI(TAG, "🎮 SBUS调试模式已启用");
+#endif
 
     // 打印系统信息
+    printf("Printing system info...\n");
     print_system_info();
+    printf("System info printed OK\n");
 
     // ====================================================================
     // 系统启动和版本信息输出
@@ -944,19 +982,34 @@ void app_main(void)
     ESP_LOGI(TAG, "");
 
     // 初始化GPIO
+    printf("Initializing GPIO...\n");
     gpio_init();
+    printf("GPIO initialized OK\n");
+    printf("Free heap after GPIO: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 初始化UART
+    printf("Initializing UART...\n");
     uart_init();
+    printf("UART initialized OK\n");
+    printf("Free heap after UART: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 初始化SBUS
+    printf("Initializing SBUS...\n");
     sbus_init();
+    printf("SBUS initialized OK\n");
+    printf("Free heap after SBUS: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 初始化电机驱动
+    printf("Initializing motor driver...\n");
     drv_keyadouble_init();
+    printf("Motor driver initialized OK\n");
+    printf("Free heap after motor: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 初始化定时器
+    printf("Initializing timers...\n");
     app_timer_init();
+    printf("Timers initialized OK\n");
+    printf("Free heap after timers: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 初始化OTA管理器
     ota_config_t ota_config = {
@@ -983,13 +1036,17 @@ void app_main(void)
     ESP_LOGI(TAG, "System initialized");
 
     // 创建FreeRTOS队列
+    printf("Creating FreeRTOS queues...\n");
     sbus_queue = xQueueCreate(5, sizeof(sbus_data_t));
     cmd_queue = xQueueCreate(5, sizeof(motor_cmd_t));
 
     if (sbus_queue == NULL || cmd_queue == NULL) {
+        printf("ERROR: Failed to create queues!\n");
         ESP_LOGE(TAG, "Failed to create queues");
         return;
     }
+    printf("Queues created OK\n");
+    printf("Free heap after queues: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 创建FreeRTOS任务
     BaseType_t xReturned;
@@ -1044,6 +1101,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create Wi-Fi management task");
     }
 
+#if ENABLE_HTTP_SERVER
     // HTTP服务器任务 - 中优先级 (增加栈大小以支持HTTP处理)
     xReturned = xTaskCreate(
         http_server_task,
@@ -1055,6 +1113,15 @@ void app_main(void)
     if (xReturned != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HTTP server task");
     }
+#else
+    ESP_LOGI(TAG, "🛡️ 核心功能模式：HTTP服务器任务已禁用");
+#endif
 
+#if CORE_FUNCTION_MODE
+    ESP_LOGI(TAG, "🎯 核心功能模式：关键FreeRTOS任务已创建");
+    ESP_LOGI(TAG, "✅ 已启用: SBUS处理、电机控制、CMD_VEL接收、状态监控、Wi-Fi管理");
+    ESP_LOGI(TAG, "🚫 已禁用: HTTP服务器、云客户端、数据集成");
+#else
     ESP_LOGI(TAG, "All FreeRTOS tasks created (including Wi-Fi and HTTP server)");
+#endif
 }

@@ -22,6 +22,31 @@
 // 项目版本信息
 #include "version.h"
 
+// ====================================================================
+// 功能开关配置
+// ====================================================================
+
+// 核心功能模式开关 - 设置为1时禁用Web功能，确保核心功能稳定性
+#define CORE_FUNCTION_MODE      1
+
+// 调试功能开关
+#define ENABLE_SBUS_DEBUG       1   // 启用SBUS实时调试打印
+#define ENABLE_SBUS_RAW_DATA    1   // 启用SBUS原始数据打印
+#define ENABLE_SBUS_FRAME_INFO  1   // 启用SBUS帧信息打印
+
+// 功能模块开关（当CORE_FUNCTION_MODE=1时，以下功能将被禁用）
+#if CORE_FUNCTION_MODE
+    #define ENABLE_HTTP_SERVER      0   // 禁用HTTP服务器
+    #define ENABLE_CLOUD_CLIENT     0   // 禁用云客户端
+    #define ENABLE_DATA_INTEGRATION 0   // 禁用数据集成
+    #define ENABLE_WEB_FEATURES     0   // 禁用所有Web功能
+#else
+    #define ENABLE_HTTP_SERVER      1   // 启用HTTP服务器
+    #define ENABLE_CLOUD_CLIENT     1   // 启用云客户端
+    #define ENABLE_DATA_INTEGRATION 1   // 启用数据集成
+    #define ENABLE_WEB_FEATURES     1   // 启用所有Web功能
+#endif
+
 // 定义GPIO引脚
 // LED指示灯引脚 - 共阳极RGB LED
 // LED1组

@@ -20,6 +20,12 @@ void configure_logging(void);
 void enable_debug_logging(void);
 
 /**
+ * 启用SBUS调试日志
+ * 专门用于SBUS接收和解析调试
+ */
+void enable_sbus_debug_logging(void);
+
+/**
  * 启用生产环境日志
  * 减少日志输出，提高性能
  */

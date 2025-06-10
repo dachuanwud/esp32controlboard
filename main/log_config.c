@@ -30,7 +30,7 @@ void configure_logging(void)
     esp_log_level_set("MAIN", ESP_LOG_INFO);
 
     // 控制模块优化日志级别
-    esp_log_level_set("SBUS", ESP_LOG_INFO);        // 提升SBUS日志级别，便于调试
+    esp_log_level_set("SBUS", ESP_LOG_DEBUG);       // 设置SBUS为DEBUG级别，便于实时调试
     esp_log_level_set("DRV_KEYA", ESP_LOG_WARN);    // 降低CAN驱动日志级别
     esp_log_level_set("CHAN_PARSE", ESP_LOG_INFO);  // 保持通道解析日志级别
     esp_log_level_set("OTA", ESP_LOG_INFO);
@@ -72,29 +72,63 @@ void enable_debug_logging(void)
 }
 
 /**
+ * 启用SBUS调试日志
+ * 专门用于SBUS接收和解析调试
+ */
+void enable_sbus_debug_logging(void)
+{
+    ESP_LOGI(TAG, "🎮 启用SBUS调试日志...");
+
+    // 设置SBUS相关模块为DEBUG级别
+    esp_log_level_set("SBUS", ESP_LOG_DEBUG);
+    esp_log_level_set("CHAN_PARSE", ESP_LOG_DEBUG);
+    esp_log_level_set("MAIN", ESP_LOG_INFO);
+
+    // 降低其他模块日志级别，减少干扰
+    esp_log_level_set("CLOUD_CLIENT", ESP_LOG_WARN);
+    esp_log_level_set("DATA_INTEGRATION", ESP_LOG_ERROR);
+    esp_log_level_set("WIFI_MANAGER", ESP_LOG_WARN);
+    esp_log_level_set("HTTP_SERVER", ESP_LOG_WARN);
+    esp_log_level_set("DRV_KEYA", ESP_LOG_WARN);
+
+    // 减少系统噪音
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("tcpip_adapter", ESP_LOG_ERROR);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_ERROR);
+    esp_log_level_set("esp_netif_lwip", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_parse", ESP_LOG_ERROR);
+    esp_log_level_set("HTTP_CLIENT", ESP_LOG_ERROR);
+
+    ESP_LOGI(TAG, "✅ SBUS调试日志已启用");
+    ESP_LOGI(TAG, "🔍 现在可以看到详细的SBUS接收和解析信息");
+}
+
+/**
  * 启用生产环境日志
  * 减少日志输出，提高性能
  */
 void enable_production_logging(void)
 {
     ESP_LOGI(TAG, "🏭 启用生产环境日志...");
-    
+
     // 设置生产级别日志
     esp_log_level_set("*", ESP_LOG_WARN);
-    
+
     // 重要模块保持INFO级别
     esp_log_level_set("CLOUD_CLIENT", ESP_LOG_INFO);
     esp_log_level_set("WIFI_MANAGER", ESP_LOG_INFO);
     esp_log_level_set("MAIN", ESP_LOG_INFO);
     esp_log_level_set("OTA", ESP_LOG_INFO);
-    
+
     // 其他模块只显示警告和错误
     esp_log_level_set("DATA_INTEGRATION", ESP_LOG_ERROR);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_WARN);
     esp_log_level_set("SBUS", ESP_LOG_WARN);        // 保持SBUS警告级别，便于故障诊断
     esp_log_level_set("DRV_KEYA", ESP_LOG_ERROR);   // CAN驱动只显示错误
     esp_log_level_set("CHAN_PARSE", ESP_LOG_WARN);  // 通道解析保持警告级别
-    
+
     ESP_LOGI(TAG, "✅ 生产环境日志已启用");
 }
 
