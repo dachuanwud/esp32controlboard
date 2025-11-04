@@ -197,14 +197,5 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right)
     motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left); // A路(左侧)速度
     motor_control(CMD_SPEED, MOTOR_CHANNEL_B, speed_right); // B路(右侧)速度
 
-    // 🔒 安全机制：如果有速度命令，重置刹车定时器
-    // 这样定时器知道系统正常工作，不会误触发紧急刹车
-    if (speed_left != 0 && brake_timer_left != NULL) {
-        xTimerReset(brake_timer_left, 0);  // 重置左刹车定时器
-    }
-    if (speed_right != 0 && brake_timer_right != NULL) {
-        xTimerReset(brake_timer_right, 0);  // 重置右刹车定时器
-    }
-
     return 0;
 }

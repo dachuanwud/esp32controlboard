@@ -16,10 +16,6 @@ static uint8_t (*intf_move)(int8_t, int8_t) = intf_move_keyadouble;
 static uint16_t last_ch_val[16] = {0};
 static bool first_run = true;
 
-// ⚡ 性能优化：减小通道变化阈值，提高控制精度和响应速度
-// 阈值从10降到5，在保持抗抖动能力的同时，提供更细腻的控制体验
-#define CHANNEL_THRESHOLD 5  // 通道值变化超过5才认为是有效变化
-
 /**
  * 将通道值转换为速度值
  * 标准SBUS协议：输入范围1050~1950，中位值1500，映射到-100~100
@@ -32,34 +28,6 @@ static int8_t chg_val(uint16_t val)
     // 优化的映射算法：(val-1500)/9*2，范围900/9*2=200，即-100到+100
     int8_t sp = (((int16_t)val - 1500) / 9 * 2) & 0xff;
     return sp;
-}
-
-/**
- * 检查关键通道是否有变化
- * @param ch_val 当前通道值数组
- * @return true=有变化，false=无变化
- */
-static bool check_channel_changed(uint16_t* ch_val)
-{
-    // 检查关键控制通道：0(左右), 2(前后), 3(备用左右), 6(模式), 7(速度减半)
-    uint8_t key_channels[] = {0, 2, 3, 6, 7};
-    bool changed = false;
-
-    for (int i = 0; i < 5; i++) {
-        uint8_t ch = key_channels[i];
-        // 如果是第一次运行，last_ch_val[ch]为0，不显示变化信息
-        if (last_ch_val[ch] != 0 && abs((int16_t)ch_val[ch] - (int16_t)last_ch_val[ch]) > CHANNEL_THRESHOLD) {
-            ESP_LOGD(TAG, "📈 Channel %d changed: %d → %d (diff: %d)",
-                     ch, last_ch_val[ch], ch_val[ch],
-                     abs((int16_t)ch_val[ch] - (int16_t)last_ch_val[ch]));
-            changed = true;
-        } else if (last_ch_val[ch] == 0) {
-            // 第一次接收到数据，标记为有变化但不显示变化信息
-            changed = true;
-        }
-    }
-
-    return changed;
 }
 
 /**
@@ -111,9 +79,6 @@ uint8_t parse_chan_val(uint16_t* ch_val)
     // ⚡ 性能优化：始终执行控制逻辑，确保实时响应
     // 移除变化检测的限制，让CAN总线始终发送最新的控制命令
     // 这样可以确保即使微小的控制变化也能立即响应
-
-    // 检查关键通道是否有变化（仅用于日志输出控制）
-    bool channels_changed = check_channel_changed(ch_val);
 
     // 始终执行控制逻辑，不再跳过处理
     if (true) {  // 原来是: if (first_run || channels_changed)

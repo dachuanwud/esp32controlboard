@@ -464,9 +464,9 @@ esp_err_t cloud_client_start(void)
     s_network_status = NETWORK_DISCONNECTED;
     s_retry_count = 0;
 
-    // 创建状态上报任务 (增加栈大小以支持JSON和HTTP操作)
-    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 10240, 优先级: 5)");
-    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 10240, NULL, 5, &s_status_task_handle);
+    // 创建状态上报任务 (优化栈大小：10240 -> 6144字节，JSON序列化不需要太多栈)
+    ESP_LOGI(TAG, "📊 创建状态上报任务 (栈大小: 6144, 优先级: 5)");
+    BaseType_t ret = xTaskCreate(status_task, "cloud_status", 6144, NULL, 5, &s_status_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建状态上报任务失败");
         s_client_running = false;
@@ -474,9 +474,9 @@ esp_err_t cloud_client_start(void)
     }
     ESP_LOGI(TAG, "✅ 状态上报任务创建成功");
 
-    // 创建指令轮询任务 (大幅增加栈大小以支持OTA下载和HTTP操作)
-    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 16384, 优先级: 5)");
-    ret = xTaskCreate(command_task, "cloud_command", 16384, NULL, 5, &s_command_task_handle);
+    // 创建指令轮询任务 (优化栈大小：16384 -> 8192字节，OTA下载可通过流式处理减少栈需求)
+    ESP_LOGI(TAG, "📊 创建指令轮询任务 (栈大小: 8192, 优先级: 5)");
+    ret = xTaskCreate(command_task, "cloud_command", 8192, NULL, 5, &s_command_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "❌ 创建指令轮询任务失败");
         s_client_running = false;

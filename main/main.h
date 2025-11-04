@@ -18,6 +18,7 @@
 #include "esp_wifi.h"
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 
 // 项目版本信息
 #include "version.h"
@@ -91,9 +92,6 @@
 extern uint8_t bk_flag_left;
 extern uint8_t bk_flag_right;
 
-// 定时器句柄声明（供drv_keyadouble.c使用，用于重置定时器）
-extern TimerHandle_t brake_timer_left;
-extern TimerHandle_t brake_timer_right;
 
 // 全局状态变量声明（供HTTP服务器使用）
 extern uint32_t g_last_sbus_update;

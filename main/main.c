@@ -22,17 +22,6 @@ static uint8_t g_cmd_pt = 0;
 // UART事件队列
 static QueueHandle_t cmd_uart_queue;
 
-// ============================================================================
-// 静态内存分配 - 定时器（优先级A优化）
-// ============================================================================
-// 定时器句柄（声明为全局，供drv_keyadouble.c使用）
-TimerHandle_t brake_timer_left = NULL;
-TimerHandle_t brake_timer_right = NULL;
-
-// 刹车定时器静态存储
-static StaticTimer_t brake_timer_left_static_buffer;
-static StaticTimer_t brake_timer_right_static_buffer;
-
 // FreeRTOS任务句柄
 static TaskHandle_t sbus_task_handle = NULL;
 static TaskHandle_t cmd_task_handle = NULL;
@@ -257,51 +246,6 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
     return ESP_OK;
 }
 #endif // ENABLE_DATA_INTEGRATION
-
-/**
- * 左刹车定时器回调函数
- * 作用：当5秒内无速度命令时，发送速度0命令（保持电机使能状态）
- * 注意：只发送速度0，不失能电机，这样收到新命令后可以立即响应
- */
-static void brake_timer_left_callback(TimerHandle_t xTimer)
-{
-    // 检查是否长时间无速度命令（通过全局更新时间戳）
-    uint32_t current_time = xTaskGetTickCount();
-    uint32_t time_diff_ms = (current_time - g_last_motor_update) * portTICK_PERIOD_MS;
-
-    // 如果超过5秒未更新，发送速度0命令（紧急刹车）
-    if (time_diff_ms > 5000) {
-        ESP_LOGW(TAG, "⚠️ 左电机控制超时（%lu ms），发送速度0命令", (unsigned long)time_diff_ms);
-
-        // 发送速度0命令（保持电机使能状态）
-        // 注意：只发送速度0，不发送CMD_DISABLE，这样电机保持使能
-        // 收到新速度命令后可以立即响应，无需重新使能
-        extern uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right);
-        intf_move_keyadouble(0, g_last_motor_right);  // 左电机速度0，右电机保持当前值
-    }
-    // 注意：定时器是自动重载模式，不需要手动重置，会自动继续运行
-}
-
-/**
- * 右刹车定时器回调函数
- * 作用：当5秒内无速度命令时，发送速度0命令（保持电机使能状态）
- */
-static void brake_timer_right_callback(TimerHandle_t xTimer)
-{
-    // 检查是否长时间无速度命令
-    uint32_t current_time = xTaskGetTickCount();
-    uint32_t time_diff_ms = (current_time - g_last_motor_update) * portTICK_PERIOD_MS;
-
-    // 如果超过5秒未更新，发送速度0命令（紧急刹车）
-    if (time_diff_ms > 5000) {
-        ESP_LOGW(TAG, "⚠️ 右电机控制超时（%lu ms），发送速度0命令", (unsigned long)time_diff_ms);
-
-        // 发送速度0命令（保持电机使能状态）
-        extern uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right);
-        intf_move_keyadouble(g_last_motor_left, 0);  // 右电机速度0，左电机保持当前值
-    }
-    // 注意：定时器是自动重载模式，不需要手动重置，会自动继续运行
-}
 
 /**
  * SBUS数据处理任务
@@ -758,78 +702,44 @@ static void http_server_task(void *pvParameters)
 
 /**
  * 状态监控任务
- * 监控系统状态（LED显示功能已注销）
+ * 监控系统状态并控制LED蓝灯闪烁指示系统运行状态
  */
 static void status_monitor_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "状态监控任务已启动 (LED显示已注销)");
+    ESP_LOGI(TAG, "状态监控任务已启动 (LED蓝灯闪烁已启用)");
+
+    // LED蓝灯闪烁控制变量
+    static bool blue_led_state = false;  // false=熄灭, true=点亮
+    static uint32_t led_tick_count = 0;
+    const uint32_t LED_BLINK_MS = 250;  // 闪烁间隔250ms (2Hz频率: 亮250ms/灭250ms)
+    const uint32_t TASK_DELAY_MS = 50;  // 任务延迟50ms，提高LED闪烁平滑度和精确度
+    const uint32_t LED_TOGGLE_INTERVAL = LED_BLINK_MS / TASK_DELAY_MS;  // 每5次循环切换一次(250ms)
 
     while (1) {
-        // 注销LED循环显示功能 - 原本循环显示不同颜色，表示系统正常运行
+        // LED蓝灯闪烁控制 - 低优先级任务，不影响核心功能
         // 注意：共阳极LED，低电平(0)点亮，高电平(1)熄灭
-        /*
-        switch (led_state) {
-            case 0: // 红色
-                // LED1组
-                gpio_set_level(LED1_RED_PIN, 0);  // 红色点亮
-                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
-                // LED2组
-                gpio_set_level(LED2_RED_PIN, 0);  // 红色点亮
-                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
-                break;
-            case 1: // 绿色
-                // LED1组
-                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED1_GREEN_PIN, 0); // 绿色点亮
-                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
-                // LED2组
-                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED2_GREEN_PIN, 0); // 绿色点亮
-                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
-                break;
-            case 2: // 蓝色
-                // LED1组
-                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED1_BLUE_PIN, 0);  // 蓝色点亮
-                // LED2组
-                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED2_BLUE_PIN, 0);  // 蓝色点亮
-                break;
-            case 3: // 全部关闭
-                // LED1组
-                gpio_set_level(LED1_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED1_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED1_BLUE_PIN, 1);  // 蓝色熄灭
-                // LED2组
-                gpio_set_level(LED2_RED_PIN, 1);  // 红色熄灭
-                gpio_set_level(LED2_GREEN_PIN, 1); // 绿色熄灭
-                gpio_set_level(LED2_BLUE_PIN, 1);  // 蓝色熄灭
-                break;
+        led_tick_count++;
+        if (led_tick_count >= LED_TOGGLE_INTERVAL) {
+            led_tick_count = 0;
+            blue_led_state = !blue_led_state;
+            
+            // 控制两组LED的蓝色，同步闪烁
+            gpio_set_level(LED1_BLUE_PIN, blue_led_state ? 0 : 1);  // 0=点亮, 1=熄灭
+            gpio_set_level(LED2_BLUE_PIN, blue_led_state ? 0 : 1);
         }
 
-        // 更新状态
-        led_state = (led_state + 1) % 4;
-        */
-
-        // 系统状态监控任务保持运行，但不进行LED显示
-        // 可以在此处添加其他系统状态监控逻辑
-
-        // 减少状态监控日志频率，每30秒输出一次系统状态
+        // 系统状态监控 - 减少日志频率，每30秒输出一次系统状态
         static uint32_t status_count = 0;
         status_count++;
 
-        if (status_count % 60 == 0) {  // 60 * 500ms = 30秒
+        if (status_count % 600 == 0) {  // 600 * 50ms = 30秒
             ESP_LOGI(TAG, "📊 System status - Heap: %" PRIu32 " bytes, Uptime: %" PRIu32 "s",
                      esp_get_free_heap_size(),
                      (uint32_t)(esp_timer_get_time() / 1000000));
         }
 
-        // 延时500ms
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // 延时50ms（较小的延迟使LED闪烁更平滑和精确）
+        vTaskDelay(pdMS_TO_TICKS(TASK_DELAY_MS));
     }
 }
 
@@ -909,53 +819,6 @@ static void uart_init(void)
     }
 }
 
-/**
- * 初始化定时器（静态分配 - 优先级A优化）
- */
-static void app_timer_init(void)
-{
-    ESP_LOGI(TAG, "⏱️  初始化刹车定时器（静态分配）...");
-
-    // 创建左刹车定时器 (5秒超时) - 静态分配
-    // 使用自动重载模式（pdTRUE），每5秒检查一次
-    brake_timer_left = xTimerCreateStatic(
-        "brake_left",                      // 定时器名称
-        pdMS_TO_TICKS(5000),              // 超时时间：5秒
-        pdTRUE,                           // 自动重载（周期触发，每5秒检查一次）
-        (void *)0,                        // 定时器ID
-        brake_timer_left_callback,        // 回调函数
-        &brake_timer_left_static_buffer   // 静态控制块
-    );
-
-    if (brake_timer_left == NULL) {
-        ESP_LOGE(TAG, "❌ Failed to create left brake timer (static allocation)");
-        abort();
-    }
-
-    // 创建右刹车定时器 (5秒超时) - 静态分配
-    // 使用自动重载模式（pdTRUE），每5秒检查一次
-    brake_timer_right = xTimerCreateStatic(
-        "brake_right",
-        pdMS_TO_TICKS(5000),
-        pdTRUE,                           // 自动重载（周期触发，每5秒检查一次）
-        (void *)0,
-        brake_timer_right_callback,
-        &brake_timer_right_static_buffer
-    );
-
-    if (brake_timer_right == NULL) {
-        ESP_LOGE(TAG, "❌ Failed to create right brake timer (static allocation)");
-        abort();
-    }
-
-    ESP_LOGI(TAG, "✅ 刹车定时器创建成功（静态分配）");
-
-    // 启动定时器
-    xTimerStart(brake_timer_left, 0);
-    xTimerStart(brake_timer_right, 0);
-
-    ESP_LOGI(TAG, "✅ 刹车定时器已启动（5秒超时保护）");
-}
 
 void app_main(void)
 {
@@ -1068,12 +931,6 @@ void app_main(void)
     printf("Motor driver initialized OK\n");
     printf("Free heap after motor: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
-    // 初始化定时器
-    printf("Initializing timers...\n");
-    app_timer_init();
-    printf("Timers initialized OK\n");
-    printf("Free heap after timers: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
-
     // 初始化OTA管理器
     ota_config_t ota_config = {
         .max_firmware_size = 1024 * 1024,  // 1MB
@@ -1149,13 +1006,9 @@ void app_main(void)
     ESP_LOGI(TAG, "  ├─ SBUS队列控制块:  %u bytes", (unsigned int)sizeof(sbus_queue_static_buffer));
     ESP_LOGI(TAG, "  ├─ CMD队列存储:     %u bytes", (unsigned int)sizeof(cmd_queue_static_storage));
     ESP_LOGI(TAG, "  └─ CMD队列控制块:   %u bytes", (unsigned int)sizeof(cmd_queue_static_buffer));
-    ESP_LOGI(TAG, "定时器静态内存：");
-    ESP_LOGI(TAG, "  ├─ 左刹车定时器:    %u bytes", (unsigned int)sizeof(brake_timer_left_static_buffer));
-    ESP_LOGI(TAG, "  └─ 右刹车定时器:    %u bytes", (unsigned int)sizeof(brake_timer_right_static_buffer));
 
     uint32_t total_static = sizeof(sbus_queue_static_storage) + sizeof(sbus_queue_static_buffer) +
-                            sizeof(cmd_queue_static_storage) + sizeof(cmd_queue_static_buffer) +
-                            sizeof(brake_timer_left_static_buffer) + sizeof(brake_timer_right_static_buffer);
+                            sizeof(cmd_queue_static_storage) + sizeof(cmd_queue_static_buffer);
 
     ESP_LOGI(TAG, "----------------------------------------");
     ESP_LOGI(TAG, "总静态内存使用:     %lu bytes (~%.1f KB)",
