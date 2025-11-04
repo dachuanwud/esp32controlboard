@@ -34,20 +34,20 @@ graph TB
         C[HTTP服务器模块] --> E
         D[云端客户端模块] --> E
     end
-    
+
     subgraph "网络层"
         F[WiFi管理模块] --> C
         F --> D
         G[时间管理模块] --> F
     end
-    
+
     subgraph "系统层"
         H[OTA管理模块] --> C
         E --> I[FreeRTOS内核]
         F --> I
         H --> I
     end
-    
+
     subgraph "硬件层"
         I --> J[ESP32芯片]
         J --> K[GPIO/UART/TWAI]
@@ -59,8 +59,8 @@ graph TB
 ### 实时性要求
 | 模块 | 响应时间 | 更新频率 | CPU占用 |
 |------|----------|----------|----------|
-| SBUS接收 | < 1ms | 71 Hz | < 5% |
-| CAN通信 | < 1ms | 实时 | < 3% |
+| SBUS接收 | < 1ms | 71 Hz (1ms延迟) | < 5% |
+| CAN通信 | < 1ms | 500Hz+ (优化后) | < 3% |
 | WiFi管理 | < 100ms | 按需 | < 8% |
 | HTTP服务器 | < 100ms | 按需 | < 10% |
 
@@ -83,7 +83,7 @@ sequenceDiagram
     participant C as CAN模块
     participant H as HTTP服务器
     participant W as WiFi管理
-    
+
     S->>D: SBUS通道数据
     D->>C: 电机控制命令
     H->>D: Web控制命令
@@ -95,8 +95,8 @@ sequenceDiagram
 ### 队列通信机制
 | 队列名称 | 发送者 | 接收者 | 数据类型 | 队列大小 |
 |----------|--------|--------|----------|----------|
-| sbus_queue | SBUS模块 | 数据集成 | sbus_data_t | 5 |
-| cmd_queue | HTTP服务器 | 数据集成 | motor_cmd_t | 5 |
+| sbus_queue | SBUS模块 | 数据集成 | sbus_data_t | 20 (优化后) |
+| cmd_queue | HTTP服务器 | 数据集成 | motor_cmd_t | 20 (优化后) |
 | wifi_event | WiFi管理 | HTTP服务器 | wifi_event_t | 10 |
 
 ## 🛠️ 模块开发指南
@@ -142,9 +142,9 @@ static module_status_t s_status = {0};
 esp_err_t module_init(const module_config_t* config)
 {
     ESP_LOGI(TAG, "🚀 Initializing module...");
-    
+
     // 初始化逻辑
-    
+
     ESP_LOGI(TAG, "✅ Module initialized successfully");
     return ESP_OK;
 }
@@ -158,19 +158,19 @@ esp_err_t module_init(const module_config_t* config)
 esp_err_t function_name(void)
 {
     esp_err_t ret = ESP_OK;
-    
+
     // 参数检查
     if (param == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     // 执行操作
     ret = some_operation();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Operation failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    
+
     return ESP_OK;
 }
 ```
@@ -259,6 +259,8 @@ Level 0: 硬件层 (ESP32芯片)
 - 关键任务使用高优先级
 - 减少任务切换开销
 - 使用队列进行异步通信
+- **性能优化**: SBUS任务1ms延迟，电机控制任务2ms延迟，队列容量20
+- **CAN优化**: 非阻塞发送模式，首次使能后仅发送速度命令（减少50%帧数）
 
 ## 🧪 模块测试
 

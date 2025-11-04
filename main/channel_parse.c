@@ -16,8 +16,9 @@ static uint8_t (*intf_move)(int8_t, int8_t) = intf_move_keyadouble;
 static uint16_t last_ch_val[16] = {0};
 static bool first_run = true;
 
-// 通道变化阈值 - 避免微小抖动触发发送
-#define CHANNEL_THRESHOLD 10  // 通道值变化超过10才认为是有效变化
+// ⚡ 性能优化：减小通道变化阈值，提高控制精度和响应速度
+// 阈值从10降到5，在保持抗抖动能力的同时，提供更细腻的控制体验
+#define CHANNEL_THRESHOLD 5  // 通道值变化超过5才认为是有效变化
 
 /**
  * 将通道值转换为速度值
@@ -107,11 +108,15 @@ static int8_t cal_offset(int8_t v1, int8_t v2)
  */
 uint8_t parse_chan_val(uint16_t* ch_val)
 {
-    // 检查关键通道是否有变化
+    // ⚡ 性能优化：始终执行控制逻辑，确保实时响应
+    // 移除变化检测的限制，让CAN总线始终发送最新的控制命令
+    // 这样可以确保即使微小的控制变化也能立即响应
+
+    // 检查关键通道是否有变化（仅用于日志输出控制）
     bool channels_changed = check_channel_changed(ch_val);
 
-    // 如果是第一次运行或通道值有变化，才执行控制逻辑
-    if (first_run || channels_changed) {
+    // 始终执行控制逻辑，不再跳过处理
+    if (true) {  // 原来是: if (first_run || channels_changed)
         if (first_run) {
             ESP_LOGI(TAG, "🚀 First run - initializing track vehicle control");
             first_run = false;
@@ -151,6 +156,10 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         static int8_t last_left_speed = 0, last_right_speed = 0;
         int8_t left_speed, right_speed;
 
+        // ⚡ 性能优化：增大速度变化阈值，减少不必要的日志输出
+        // 从5增加到15，只在显著变化时才打印日志
+        #define SPEED_LOG_THRESHOLD 15
+
         if (sp_fb == 0) {
             if (sp_lr == 0) {
                 // 停止
@@ -163,7 +172,7 @@ uint8_t parse_chan_val(uint16_t* ch_val)
                 // 原地转向
                 left_speed = sp_lr;
                 right_speed = (-1) * sp_lr;
-                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "🔄 TURN IN PLACE - LR:%d", sp_lr);
                 }
             }
@@ -172,21 +181,21 @@ uint8_t parse_chan_val(uint16_t* ch_val)
                 // 前进或后退
                 left_speed = sp_fb;
                 right_speed = sp_fb;
-                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "%s STRAIGHT - Speed:%d", sp_fb > 0 ? "⬆️ FORWARD" : "⬇️ BACKWARD", sp_fb);
                 }
             } else if (sp_lr > 0) {
                 // 差速右转
                 left_speed = sp_fb;
                 right_speed = cal_offset(sp_fb, sp_lr);
-                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "↗️ DIFFERENTIAL RIGHT - Left:%d Right:%d", left_speed, right_speed);
                 }
             } else {
                 // 差速左转
                 left_speed = cal_offset(sp_fb, sp_lr);
                 right_speed = sp_fb;
-                if (abs(left_speed - last_left_speed) > 5 || abs(right_speed - last_right_speed) > 5) {
+                if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "↖️ DIFFERENTIAL LEFT - Left:%d Right:%d", left_speed, right_speed);
                 }
             }
@@ -199,11 +208,12 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         last_left_speed = left_speed;
         last_right_speed = right_speed;
 
-        // 更新保存的通道值
+        // 更新保存的通道值（用于变化检测和日志输出）
         update_last_channels(ch_val);
-    } else {
-        ESP_LOGD(TAG, "📊 No significant channel changes - skipping CAN transmission");
     }
+
+    // ⚡ 性能优化：移除了"无变化则跳过"的逻辑
+    // 现在每次调用都会发送CAN命令，确保实时性和准确性
 
     return 0;
 }

@@ -26,7 +26,7 @@
 // 功能开关配置
 // ====================================================================
 
-// 核心功能模式开关 - 设置为1时禁用Web功能，确保核心功能稳定性
+// 核心功能模式开关 - 设置为1时禁用Web功能和Wi-Fi连接，确保核心功能稳定性
 #define CORE_FUNCTION_MODE      1
 
 // 调试功能开关
@@ -40,11 +40,13 @@
     #define ENABLE_CLOUD_CLIENT     0   // 禁用云客户端
     #define ENABLE_DATA_INTEGRATION 0   // 禁用数据集成
     #define ENABLE_WEB_FEATURES     0   // 禁用所有Web功能
+    #define ENABLE_WIFI             0   // 禁用Wi-Fi连接
 #else
     #define ENABLE_HTTP_SERVER      1   // 启用HTTP服务器
     #define ENABLE_CLOUD_CLIENT     1   // 启用云客户端
     #define ENABLE_DATA_INTEGRATION 1   // 启用数据集成
     #define ENABLE_WEB_FEATURES     1   // 启用所有Web功能
+    #define ENABLE_WIFI             1   // 启用Wi-Fi连接
 #endif
 
 // 定义GPIO引脚
@@ -88,6 +90,10 @@
 // 外部变量声明
 extern uint8_t bk_flag_left;
 extern uint8_t bk_flag_right;
+
+// 定时器句柄声明（供drv_keyadouble.c使用，用于重置定时器）
+extern TimerHandle_t brake_timer_left;
+extern TimerHandle_t brake_timer_right;
 
 // 全局状态变量声明（供HTTP服务器使用）
 extern uint32_t g_last_sbus_update;

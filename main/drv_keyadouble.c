@@ -25,6 +25,9 @@ static const char *TAG = "DRV_KEYA";
 uint8_t bk_flag_left = 0;
 uint8_t bk_flag_right = 0;
 
+// 电机使能状态标志（避免重复发送使能命令）
+static bool motor_enabled = false;
+
 // TWAI (CAN) 配置 - 根据电路图SN65HVD232D CAN收发电路
 // IO16连接到SN65HVD232D的D引脚(TX)，IO17连接到R引脚(RX)
 // 使用标准模式，但发送时不等待ACK应答
@@ -82,7 +85,9 @@ static void keya_send_data(uint32_t id, uint8_t* data)
         ESP_LOGD(TAG, "Motor Ch%d speed: %d", channel, actual_speed);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // ⚡ 性能优化：移除延迟，避免阻塞控制循环
+    // CAN发送采用非阻塞模式(超时=0)，无需额外延迟
+    // 原有的10ms延迟会导致每次电机控制延迟40ms（4帧×10ms）
 }
 
 /**
@@ -145,6 +150,9 @@ esp_err_t drv_keyadouble_init(void)
     ESP_ERROR_CHECK(twai_driver_install(&g_config, &t_config, &f_config));
     ESP_ERROR_CHECK(twai_start());
 
+    // 初始化电机使能状态
+    motor_enabled = false;
+
     ESP_LOGI(TAG, "Motor driver initialized");
     return ESP_OK;
 }
@@ -175,13 +183,28 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right)
         bk_flag_right = 0; // 0为刹车
     }
 
-    // 使能电机两路电机
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0); // 使能A路(左侧)
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0); // 使能B路(右侧)
+    // ⚡ 性能优化：只在首次调用时发送使能命令，避免重复发送
+    // 电机驱动器在使能后会保持状态，无需每次都发送使能命令
+    // 这将减少50%的CAN帧发送量（从4帧减少到2帧）
+    if (!motor_enabled) {
+        motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0); // 使能A路(左侧)
+        motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0); // 使能B路(右侧)
+        motor_enabled = true;
+        ESP_LOGI(TAG, "⚡ Motors enabled (one-time initialization)");
+    }
 
-    // 设置速度命令
+    // 设置速度命令（每次都需要发送）
     motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left); // A路(左侧)速度
     motor_control(CMD_SPEED, MOTOR_CHANNEL_B, speed_right); // B路(右侧)速度
+
+    // 🔒 安全机制：如果有速度命令，重置刹车定时器
+    // 这样定时器知道系统正常工作，不会误触发紧急刹车
+    if (speed_left != 0 && brake_timer_left != NULL) {
+        xTimerReset(brake_timer_left, 0);  // 重置左刹车定时器
+    }
+    if (speed_right != 0 && brake_timer_right != NULL) {
+        xTimerReset(brake_timer_right, 0);  // 重置右刹车定时器
+    }
 
     return 0;
 }

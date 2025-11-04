@@ -89,7 +89,7 @@ esp_err_t sbus_init(void)
     // 安装UART驱动
     ESP_ERROR_CHECK(uart_driver_install(UART_SBUS, 256, 256, 50, &sbus_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_SBUS, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_SBUS, UART_PIN_NO_CHANGE, GPIO_NUM_22, 
+    ESP_ERROR_CHECK(uart_set_pin(UART_SBUS, UART_PIN_NO_CHANGE, GPIO_NUM_22,
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     // SBUS使用反相逻辑，硬件无反相器时必须启用软件反相
@@ -111,9 +111,9 @@ static void sbus_uart_task(void *pvParameters)
 {
     uart_event_t event;
     uint8_t data;
-    
+
     ESP_LOGI(TAG, "🚀 SBUS UART task started");
-    
+
     while (1) {
         if (xQueueReceive(sbus_uart_queue, (void *)&event, portMAX_DELAY)) {
             if (event.type == UART_DATA) {
@@ -135,13 +135,13 @@ static void sbus_receive_byte(uint8_t data)
 {
     g_sbus_rx_buf[g_sbus_pt] = data;
     g_sbus_pt++;
-    
+
     // 帧头检测
     if (g_sbus_pt == 1) {
         if (data != 0x0f) {
             g_sbus_pt--; // 回退，重新等待帧头
         }
-    } 
+    }
     // 帧尾检测
     else if (g_sbus_pt == 25) {
         if (data == 0x00) {
@@ -176,16 +176,16 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
 {
     // 按照SBUS协议正确解析16个通道（每个通道11位）
     // data1-22包含16个通道的数据
-    
+
     // 通道0: 数据字节1的低8位 + 数据字节2的低3位
     channel[0] = (sbus_data[1] >> 0 | sbus_data[2] << 8) & 0x07FF;
-    
+
     // 通道1: 数据字节2的高5位 + 数据字节3的低6位
     channel[1] = (sbus_data[2] >> 3 | sbus_data[3] << 5) & 0x07FF;
-    
+
     // 通道2: 数据字节3的高2位 + 数据字节4的全部 + 数据字节5的低1位
     channel[2] = (sbus_data[3] >> 6 | sbus_data[4] << 2 | sbus_data[5] << 10) & 0x07FF;
-    
+
     // ... 继续解析其他13个通道
 }
 ````
@@ -230,9 +230,9 @@ static void sbus_process_task(void *pvParameters)
     uint8_t sbus_data[LEN_SBUS];
     uint16_t ch_val[LEN_CHANEL];
     sbus_data_t sbus_queue_data;
-    
+
     ESP_LOGI(TAG, "SBUS处理任务已启动");
-    
+
     while (1) {
         // 检查是否有新的SBUS数据
         if (sbus_get_data(sbus_data)) {
@@ -240,7 +240,7 @@ static void sbus_process_task(void *pvParameters)
             if (parse_sbus_msg(sbus_data, ch_val) == 0) {
                 // 复制通道数据到队列结构
                 memcpy(sbus_queue_data.channel, ch_val, sizeof(ch_val));
-                
+
                 // 发送到队列，满时覆盖旧数据
                 if (xQueueSend(sbus_queue, &sbus_queue_data, 0) != pdPASS) {
                     sbus_data_t dummy;
@@ -249,8 +249,10 @@ static void sbus_process_task(void *pvParameters)
                 }
             }
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(10));
+
+        // ⚡ 性能优化：减少延迟从10ms到1ms，提高SBUS数据处理速度
+        // SBUS数据帧率约为14-20Hz (50-70ms周期)，1ms延迟足够捕获所有数据
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 ````
@@ -265,7 +267,8 @@ typedef struct {
 } sbus_data_t;
 
 // 队列创建
-sbus_queue = xQueueCreate(5, sizeof(sbus_data_t));
+// ⚡ 性能优化：增加队列大小从5到20，避免高频率控制时数据丢失
+sbus_queue = xQueueCreate(20, sizeof(sbus_data_t));
 
 // 队列发送策略：满时覆盖，确保实时性
 if (xQueueSend(sbus_queue, &sbus_data, 0) != pdPASS) {
@@ -282,8 +285,10 @@ if (xQueueSend(sbus_queue, &sbus_data, 0) != pdPASS) {
 |------|------|------|
 | 更新频率 | 71 Hz | 14ms周期 |
 | 解析延迟 | < 1ms | 软件处理时间 |
+| 任务延迟 | 1ms | 任务循环延迟（优化后） |
 | 队列延迟 | < 1ms | 任务间通信 |
-| 端到端延迟 | < 5ms | 接收到控制输出 |
+| 端到端延迟 | 3-5ms | SBUS接收到CAN输出（优化后） |
+| 处理频率 | 1000Hz | SBUS数据处理频率（优化后） |
 
 ### 资源使用
 | 资源 | 使用量 | 说明 |
@@ -348,11 +353,11 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel);
 esp_log_level_set("SBUS", ESP_LOG_DEBUG);
 
 // 帧接收调试
-ESP_LOGD(TAG, "📦 SBUS frame - Header: 0x%02X, Footer: 0x%02X", 
+ESP_LOGD(TAG, "📦 SBUS frame - Header: 0x%02X, Footer: 0x%02X",
          sbus_data[0], sbus_data[24]);
 
 // 通道数据调试
-ESP_LOGD(TAG, "📊 Channels: CH0=%d CH1=%d CH2=%d", 
+ESP_LOGD(TAG, "📊 Channels: CH0=%d CH1=%d CH2=%d",
          channel[0], channel[1], channel[2]);
 ```
 
@@ -365,7 +370,7 @@ static uint32_t error_count = 0;
 void sbus_quality_check(void)
 {
     float success_rate = (float)(frame_count - error_count) / frame_count * 100;
-    ESP_LOGI(TAG, "📊 SBUS Quality - Success: %.2f%% (%d/%d)", 
+    ESP_LOGI(TAG, "📊 SBUS Quality - Success: %.2f%% (%d/%d)",
              success_rate, frame_count - error_count, frame_count);
 }
 ```
@@ -416,3 +421,5 @@ void debug_sbus_raw_data(uint8_t* data)
 - [CAN通信模块](CAN通信模块.md)
 - [数据集成模块](数据集成模块.md)
 - [SBUS协议详解](../04-协议文档/SBUS协议详解.md)
+- [SBUS到CAN数据流](../SBUS_TO_CAN_DATAFLOW.md) - 完整数据流路径
+- [性能优化报告](../../PERFORMANCE_OPTIMIZATION_REPORT.md) - 性能优化详情

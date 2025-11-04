@@ -247,7 +247,7 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     }
 #endif
 
-    // 实时打印关键通道数据和变化检测
+    // ⚡ 性能优化：减少日志输出频率，降低CPU占用
     static uint16_t last_channels[16] = {0};
     static bool first_sbus_data = true;
     static uint32_t frame_count = 0;
@@ -255,22 +255,24 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
 
     frame_count++;
 
-    // 检查关键通道是否有显著变化（阈值为20）
+    // 检查关键通道是否有显著变化（阈值从20增加到30，减少打印频率）
     uint8_t key_ch[] = {0, 1, 2, 3, 6, 7};
     for (int i = 0; i < 6; i++) {
         uint8_t ch = key_ch[i];
-        if (abs((int16_t)channel[ch] - (int16_t)last_channels[ch]) > 20) {
+        if (abs((int16_t)channel[ch] - (int16_t)last_channels[ch]) > 30) {
             significant_change = true;
             break;
         }
     }
 
 #if ENABLE_SBUS_DEBUG
-    // 实时打印所有通道数据（调试模式）
-    ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 所有通道数据:", frame_count);
-    ESP_LOGI(TAG, "   CH0-3:  %4d %4d %4d %4d", channel[0], channel[1], channel[2], channel[3]);
-    ESP_LOGI(TAG, "   CH4-7:  %4d %4d %4d %4d", channel[4], channel[5], channel[6], channel[7]);
-    ESP_LOGI(TAG, "   CH8-11: %4d %4d %4d %4d", channel[8], channel[9], channel[10], channel[11]);
+    // 调试模式：减少打印频率，每5帧打印一次而不是每帧
+    if (frame_count % 5 == 0) {
+        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 所有通道数据:", frame_count);
+        ESP_LOGI(TAG, "   CH0-3:  %4d %4d %4d %4d", channel[0], channel[1], channel[2], channel[3]);
+        ESP_LOGI(TAG, "   CH4-7:  %4d %4d %4d %4d", channel[4], channel[5], channel[6], channel[7]);
+        ESP_LOGI(TAG, "   CH8-11: %4d %4d %4d %4d", channel[8], channel[9], channel[10], channel[11]);
+    }
 
     // 避免未使用变量警告
     (void)significant_change;
@@ -281,8 +283,8 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
         ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 关键通道: CH0:%4u CH1:%4u CH2:%4u CH3:%4u CH6:%4u CH7:%4u",
                  frame_count, channel[0], channel[1], channel[2], channel[3], channel[6], channel[7]);
     } else {
-        // 每10帧打印一次状态，保持活跃度指示
-        if (frame_count % 10 == 0) {
+        // 每100帧打印一次状态（从10增加到100），减少日志负担
+        if (frame_count % 100 == 0) {
             ESP_LOGD(TAG, "🎮 SBUS活跃 - 帧#%lu: CH0:%4u CH2:%4u CH3:%4u",
                      frame_count, channel[0], channel[2], channel[3]);
         }

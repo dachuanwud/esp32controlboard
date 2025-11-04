@@ -1,0 +1,94 @@
+# ====================================================================
+# Docker Compose 配置 - ESP32 开发环境
+# 简化 Docker 容器管理
+# ====================================================================
+
+version: '3.8'
+
+services:
+  # ESP32 开发环境
+  esp32-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: esp32controlboard:latest
+    container_name: esp32-dev
+    working_dir: /project
+    volumes:
+      # 挂载项目目录
+      - .:/project
+      # 挂载 ESP-IDF 缓存（可选，加速构建）
+      - esp-idf-cache:/root/.espressif
+    # USB 设备（Linux）
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    # 或 macOS
+    # devices:
+    #   - /dev/cu.usbserial-0001:/dev/ttyUSB0
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # Web 前端开发服务器（可选）
+  web-dev:
+    image: node:18-alpine
+    container_name: esp32-web-dev
+    working_dir: /app
+    volumes:
+      - ./web_client:/app
+    ports:
+      - "5173:5173"
+      - "3000:3000"
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      - NODE_ENV=development
+
+  # 云服务器（可选）
+  cloud-server:
+    image: node:18-alpine
+    container_name: esp32-cloud-server
+    working_dir: /app
+    volumes:
+      - ./cloud_server:/app
+    ports:
+      - "3001:3001"
+    command: sh -c "npm install && npm start"
+    environment:
+      - NODE_ENV=production
+
+volumes:
+  esp-idf-cache:
+
+# ====================================================================
+# 使用说明:
+#
+# 1. 启动开发环境:
+#    docker-compose up -d esp32-dev
+#
+# 2. 进入容器:
+#    docker-compose exec esp32-dev bash
+#
+# 3. 编译项目:
+#    docker-compose run --rm esp32-dev idf.py build
+#
+# 4. 烧录固件:
+#    docker-compose run --rm esp32-dev idf.py -p /dev/ttyUSB0 flash
+#
+# 5. 启动 Web 开发服务器:
+#    docker-compose up -d web-dev
+#
+# 6. 启动所有服务:
+#    docker-compose up -d
+#
+# 7. 查看日志:
+#    docker-compose logs -f
+#
+# 8. 停止所有服务:
+#    docker-compose down
+#
+# 注意:
+# - macOS 用户需要修改 devices 配置为实际的串口设备
+# - 首次运行会自动构建镜像，可能需要几分钟
+# - 使用卷（volume）缓存 ESP-IDF 工具，加速后续构建
+# ====================================================================
+

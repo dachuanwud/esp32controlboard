@@ -1,0 +1,72 @@
+# ====================================================================
+# Docker 构建忽略文件
+# 减少 Docker 镜像大小，加快构建速度
+# ====================================================================
+
+# 构建输出
+build/
+managed_components/
+dependencies.lock
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# 文档
+docs/
+*.md
+LICENSE
+
+# Node.js (Web 前端)
+web_client/node_modules/
+web_client/dist/
+web_client/.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 测试和临时文件
+*.log
+*.tmp
+*.bak
+*.backup
+
+# 云服务器（不需要在 ESP32 镜像中）
+cloud_server/
+
+# 编译脚本（特定于主机）
+*.bat
+build_only.sh
+flash_com10.bat
+monitor_com10.bat
+
+# Docker 相关
+.dockerignore
+Dockerfile
+docker-compose.yml
+
