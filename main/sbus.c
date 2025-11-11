@@ -191,8 +191,9 @@ esp_err_t sbus_init(void)
 
 /**
  * 解析SBUS数据，按照正确的SBUS协议解析16个通道
- * SBUS协议：25字节 = [0xF0] + [data1-22] + [flags] + [0x00]
+ * SBUS协议：25字节 = [0x0F] + [data1-22] + [flags] + [0x00]
  * 每个通道11位，范围0-2047
+ * 更新率：模拟模式14ms (71.4Hz)，高速模式7ms (142.9Hz)
  */
 uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
 {

@@ -284,9 +284,10 @@ static void sbus_process_task(void *pvParameters)
             }
         }
 
-        // ⚡ 性能优化：减少延迟从10ms到1ms，提高SBUS数据处理速度
-        // SBUS数据帧率约为14-20Hz (50-70ms周期)，1ms延迟足够捕获所有数据
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // ⚡ 性能优化：2ms延迟足够处理SBUS数据
+        // SBUS更新率：模拟模式14ms (71.4Hz)，高速模式7ms (142.9Hz)
+        // 2ms延迟可支持高达500Hz的处理频率，完全满足SBUS需求
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
@@ -744,6 +745,52 @@ static void status_monitor_task(void *pvParameters)
 }
 
 /**
+ * 上电LED闪烁指示
+ * 闪烁3次，每次200ms，用于指示系统上电成功
+ */
+static void led_power_on_blink(void)
+{
+    const int blink_count = 3;
+    const int blink_duration_ms = 200;
+    
+    // 闪烁3次：红→绿→蓝循环
+    for (int i = 0; i < blink_count; i++) {
+        // 熄灭所有LED
+        gpio_set_level(LED1_RED_PIN, 1);
+        gpio_set_level(LED1_GREEN_PIN, 1);
+        gpio_set_level(LED1_BLUE_PIN, 1);
+        gpio_set_level(LED2_RED_PIN, 1);
+        gpio_set_level(LED2_GREEN_PIN, 1);
+        gpio_set_level(LED2_BLUE_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(blink_duration_ms));
+        
+        // 根据循环次数点亮不同颜色的LED
+        if (i % 3 == 0) {
+            // 红色
+            gpio_set_level(LED1_RED_PIN, 0);
+            gpio_set_level(LED2_RED_PIN, 0);
+        } else if (i % 3 == 1) {
+            // 绿色
+            gpio_set_level(LED1_GREEN_PIN, 0);
+            gpio_set_level(LED2_GREEN_PIN, 0);
+        } else {
+            // 蓝色
+            gpio_set_level(LED1_BLUE_PIN, 0);
+            gpio_set_level(LED2_BLUE_PIN, 0);
+        }
+        vTaskDelay(pdMS_TO_TICKS(blink_duration_ms));
+    }
+    
+    // 最后熄灭所有LED
+    gpio_set_level(LED1_RED_PIN, 1);
+    gpio_set_level(LED1_GREEN_PIN, 1);
+    gpio_set_level(LED1_BLUE_PIN, 1);
+    gpio_set_level(LED2_RED_PIN, 1);
+    gpio_set_level(LED2_GREEN_PIN, 1);
+    gpio_set_level(LED2_BLUE_PIN, 1);
+}
+
+/**
  * 初始化GPIO
  */
 static void gpio_init(void)
@@ -776,6 +823,9 @@ static void gpio_init(void)
     gpio_set_level(LED2_RED_PIN, 1);
     gpio_set_level(LED2_GREEN_PIN, 1);
     gpio_set_level(LED2_BLUE_PIN, 1);
+    
+    // 执行上电LED闪烁指示
+    led_power_on_blink();
 }
 
 /**
