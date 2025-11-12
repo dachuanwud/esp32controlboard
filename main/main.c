@@ -250,6 +250,7 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
 /**
  * SBUS数据处理任务
  * 接收SBUS数据并通过队列发送给控制任务
+ * 持续轮询等待SBUS数据，确保实时响应
  */
 static void sbus_process_task(void *pvParameters)
 {
@@ -257,7 +258,7 @@ static void sbus_process_task(void *pvParameters)
     uint16_t ch_val[LEN_CHANEL] = {0};
     sbus_data_t sbus_data;
 
-    // SBUS处理任务已启动
+    ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
 
     while (1) {
         // 检查SBUS数据
@@ -284,9 +285,10 @@ static void sbus_process_task(void *pvParameters)
             }
         }
 
-        // ⚡ 性能优化：2ms延迟足够处理SBUS数据
+        // ⚡ 持续轮询等待SBUS数据，2ms延迟确保实时响应
         // SBUS更新率：模拟模式14ms (71.4Hz)，高速模式7ms (142.9Hz)
         // 2ms延迟可支持高达500Hz的处理频率，完全满足SBUS需求
+        // 持续运行确保不会错过任何SBUS数据
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }

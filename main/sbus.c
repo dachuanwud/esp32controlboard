@@ -2,6 +2,7 @@
 #include "sbus.h"
 #include "main.h"
 #include "hal/uart_types.h"  // 包含UART_INVERT_RXD定义
+#include "freertos/semphr.h"
 
 static const char *TAG = "SBUS";
 
@@ -11,6 +12,9 @@ static uint8_t g_sbus_pt = 0;
 
 // UART事件队列
 static QueueHandle_t sbus_uart_queue;
+
+// SBUS数据就绪信号量（用于通知处理任务）
+static SemaphoreHandle_t sbus_data_ready_sem = NULL;
 
 /**
  * SBUS UART接收任务
@@ -113,6 +117,10 @@ static void sbus_uart_task(void *pvParameters)
                                     // LED指示
                                     gpio_set_level(LED1_GREEN_PIN, 0);
                                     gpio_set_level(LED2_GREEN_PIN, 0);
+                                    // 通知处理任务有新数据
+                                    if (sbus_data_ready_sem != NULL) {
+                                        xSemaphoreGive(sbus_data_ready_sem);
+                                    }
                                 } else {
 #if ENABLE_SBUS_FRAME_INFO
                                     ESP_LOGW(TAG, "❌ 帧尾错误: 0x%02X (期望: 0x00)，丢弃帧", data);
@@ -177,6 +185,13 @@ esp_err_t sbus_init(void)
     // SBUS使用反相逻辑，硬件无反相器时必须启用软件反相
     ESP_ERROR_CHECK(uart_set_line_inverse(UART_SBUS, UART_SIGNAL_RXD_INV));
     ESP_LOGI(TAG, "🔄 Signal inversion: ENABLED (no hardware inverter)");
+
+    // 创建SBUS数据就绪信号量
+    sbus_data_ready_sem = xSemaphoreCreateBinary();
+    if (sbus_data_ready_sem == NULL) {
+        ESP_LOGE(TAG, "❌ Failed to create SBUS data ready semaphore");
+        return ESP_ERR_NO_MEM;
+    }
 
     // 创建UART接收任务 (增加栈大小以支持调试输出)
     xTaskCreate(sbus_uart_task, "sbus_uart_task", 4096, NULL, 12, NULL);
@@ -313,4 +328,15 @@ bool sbus_get_data(uint8_t* sbus_data)
         return true;
     }
     return false;
+}
+
+/**
+ * 等待SBUS数据就绪信号量
+ */
+BaseType_t sbus_wait_data_ready(TickType_t timeout_ms)
+{
+    if (sbus_data_ready_sem == NULL) {
+        return pdFALSE;
+    }
+    return xSemaphoreTake(sbus_data_ready_sem, timeout_ms);
 }

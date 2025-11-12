@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /**
  * 初始化SBUS接收
@@ -25,5 +27,12 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel);
  * @return true=有新数据，false=无新数据
  */
 bool sbus_get_data(uint8_t* sbus_data);
+
+/**
+ * 等待SBUS数据就绪信号量（用于任务阻塞等待）
+ * @param timeout_ms 超时时间（毫秒），portMAX_DELAY表示无限等待
+ * @return pdTRUE=信号量已获取，pdFALSE=超时
+ */
+BaseType_t sbus_wait_data_ready(TickType_t timeout_ms);
 
 #endif /* SBUS_H */
