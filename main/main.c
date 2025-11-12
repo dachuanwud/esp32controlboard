@@ -285,11 +285,10 @@ static void sbus_process_task(void *pvParameters)
             }
         }
 
-        // ⚡ 持续轮询等待SBUS数据，2ms延迟确保实时响应
+        // 🔄 调整为100ms延迟，与STM32项目保持一致
         // SBUS更新率：模拟模式14ms (71.4Hz)，高速模式7ms (142.9Hz)
-        // 2ms延迟可支持高达500Hz的处理频率，完全满足SBUS需求
-        // 持续运行确保不会错过任何SBUS数据
-        vTaskDelay(pdMS_TO_TICKS(2));
+        // 100ms延迟可满足SBUS需求，降低CPU占用
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -398,9 +397,9 @@ static void motor_control_task(void *pvParameters)
             }
         }
 
-        // ⚡ 性能优化：减少延迟从10ms到2ms，提高控制响应速度
-        // 电机控制需要快速响应SBUS输入，2ms延迟可提供高达500Hz的控制频率
-        vTaskDelay(pdMS_TO_TICKS(2));
+        // 🔄 调整为100ms延迟，与STM32项目保持一致
+        // 降低控制频率，减少CPU占用，与STM32主循环频率一致
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
