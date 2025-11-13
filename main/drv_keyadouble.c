@@ -35,6 +35,9 @@ static uint32_t can_recovery_count = 0;
 static uint32_t last_recovery_time = 0;
 #define CAN_RECOVERY_MIN_INTERVAL_MS 1000  // 最小恢复间隔1秒，避免频繁恢复影响SBUS接收
 
+// 注意：已移除motor_enabled标志，改为每次发送速度命令时都发送使能命令
+// 这样可以避免看门狗超时导致的驱动器失能问题
+
 // TWAI (CAN) 配置 - 根据电路图SN65HVD232D CAN收发电路
 // IO16连接到SN65HVD232D的D引脚(TX)，IO17连接到R引脚(RX)
 // 使用标准模式，但发送时不等待ACK应答
@@ -429,7 +432,10 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right)
         bk_flag_right = 0; // 0为刹车
     }
 
-    // 设置速度命令（每次都需要发送）
+    // 🔒 可靠性优化：每次发送速度命令前都发送使能命令
+    // 这样可以避免看门狗超时（1000ms）导致的驱动器失能问题
+    // 即使控制间隔超过1000ms，也能确保电机始终处于使能状态
+    // 代价：CAN帧数从2帧/次增加到4帧/次，但在250Kbps下仍在可接受范围
     motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0); // 使能A路(左侧)
     motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0); // 使能B路(右侧)
     motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left); // A路(左侧)速度
