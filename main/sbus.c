@@ -25,6 +25,9 @@ static void sbus_uart_task(void *pvParameters)
     uint8_t data;
 
     static uint32_t byte_count = 0;
+    // 记录最后一次成功接收完整SBUS帧的时间（用于超时检测）
+    static TickType_t last_frame_time = 0;
+    static bool first_frame_received = false;
 
     ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO22...");
     ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
@@ -41,15 +44,20 @@ static void sbus_uart_task(void *pvParameters)
         static uint32_t last_event_time = 0;
         loop_count++;
 
-        // 移除冗余的调试输出，只保留必要的错误检查
-        if (loop_count % 10000 == 0) {  // 大幅减少调试频率
-            // 检查UART缓冲区是否溢出
+        // 🔧 优化：更频繁地检查UART缓冲区状态，防止溢出
+        // 从每10000次循环改为每100次循环检查一次
+        if (loop_count % 100 == 0) {
             size_t uart_buf_len = 0;
             uart_get_buffered_data_len(UART_SBUS, &uart_buf_len);
-            if (uart_buf_len > 500) {
-                uart_flush(UART_SBUS);
-                ESP_LOGW(TAG, "⚠️ UART buffer overflow, flushed %" PRIu32 " bytes", (uint32_t)uart_buf_len);
-                g_sbus_pt = 0; // 重置SBUS解析状态
+            // 🔧 降低溢出阈值，提前警告（从500字节降到300字节）
+            if (uart_buf_len > 300) {
+                ESP_LOGW(TAG, "⚠️ UART buffer filling up: %" PRIu32 " bytes (threshold: 300)", (uint32_t)uart_buf_len);
+                // 如果超过800字节，强制刷新（防止完全溢出）
+                if (uart_buf_len > 800) {
+                    uart_flush(UART_SBUS);
+                    ESP_LOGW(TAG, "⚠️ UART buffer overflow, flushed %" PRIu32 " bytes", (uint32_t)uart_buf_len);
+                    g_sbus_pt = 0; // 重置SBUS解析状态
+                }
             }
         }
 
@@ -60,10 +68,16 @@ static void sbus_uart_task(void *pvParameters)
             last_event_time = xTaskGetTickCount();
             ESP_LOGD(TAG, "📨 UART event received at tick: %" PRIu32, last_event_time);
             if (event.type == UART_DATA) {
-                // 读取所有可用的UART数据，而不是一次只读一个字节
-                uint8_t temp_buffer[64];
-                int len = uart_read_bytes(UART_SBUS, temp_buffer, sizeof(temp_buffer), pdMS_TO_TICKS(10));
-                if (len > 0) {
+                // 🔧 优化：循环读取直到缓冲区清空，而不是只读一次
+                // 增加读取缓冲区大小从64到128字节，提高处理效率
+                uint8_t temp_buffer[128];
+                
+                // 循环读取，直到UART缓冲区清空
+                while (1) {
+                    int len = uart_read_bytes(UART_SBUS, temp_buffer, sizeof(temp_buffer), 0);  // 非阻塞读取
+                    if (len <= 0) {
+                        break;  // 没有更多数据，退出循环
+                    }
 #if ENABLE_SBUS_RAW_DATA
                     // 打印接收到的原始数据（用于调试）
                     ESP_LOGD(TAG, "📥 接收到 %d 字节原始数据", len);
@@ -114,6 +128,9 @@ static void sbus_uart_task(void *pvParameters)
                                     ESP_LOGD(TAG, "✅ 检测到SBUS帧尾: 0x%02X，完整帧接收完成", data);
 #endif
                                     g_sbus_pt |= 0x80; // 标记一帧数据的接收
+                                    // 更新最后接收帧的时间戳（用于超时检测）
+                                    last_frame_time = xTaskGetTickCount();
+                                    first_frame_received = true;
                                     // LED指示
                                     gpio_set_level(LED1_GREEN_PIN, 0);
                                     gpio_set_level(LED2_GREEN_PIN, 0);
@@ -130,19 +147,28 @@ static void sbus_uart_task(void *pvParameters)
                             }
                         }
                     } // 关闭 for 循环
-                }
+                }  // 关闭 while 循环（清空UART缓冲区）
             } else {
                 ESP_LOGD(TAG, "UART event type: %d", event.type);
             }
         } else {
-            // 超时，没有接收到数据
-            static uint32_t no_data_count = 0;
-            no_data_count++;
-
-            // 简化超时处理，减少日志输出
-            if (no_data_count > 500) {  // 约5秒无数据时提示一次
-                ESP_LOGW(TAG, "⚠️ No SBUS data for 5 seconds - check connections");
-                no_data_count = 0;
+            // 超时，没有接收到UART事件
+            // 基于实际SBUS帧接收时间判断超时，而不是基于UART事件队列超时
+            if (first_frame_received) {
+                TickType_t current_time = xTaskGetTickCount();
+                TickType_t time_since_last_frame = current_time - last_frame_time;
+                
+                // SBUS标准更新率：模拟模式14ms，高速模式7ms
+                // 如果超过100ms（约7倍正常间隔）没有收到完整帧，则警告
+                if (time_since_last_frame > pdMS_TO_TICKS(100)) {
+                    static TickType_t last_warning_time = 0;
+                    // 每5秒只警告一次，避免日志刷屏
+                    if (current_time - last_warning_time > pdMS_TO_TICKS(5000)) {
+                        ESP_LOGW(TAG, "⚠️ No SBUS frame received for %lu ms - check connections", 
+                                (unsigned long)(time_since_last_frame * portTICK_PERIOD_MS));
+                        last_warning_time = current_time;
+                    }
+                }
             }
 
             // 让出CPU时间，避免看门狗超时
@@ -174,8 +200,10 @@ esp_err_t sbus_init(void)
     ESP_LOGI(TAG, "   ✅ Parity: %s", uart_config.parity == UART_PARITY_EVEN ? "Even" : "None");
     ESP_LOGI(TAG, "   🛑 Stop bits: %d", uart_config.stop_bits == UART_STOP_BITS_2 ? 2 : 1);
 
-    // 安装UART驱动 - 增加缓冲区大小以防止数据丢失
-    ESP_ERROR_CHECK(uart_driver_install(UART_SBUS, 1024, 0, 50, &sbus_uart_queue, 0));
+    // 🔧 优化：增加UART接收缓冲区大小（从1024增加到2048字节）
+    // 防止高频SBUS数据（71.4Hz）导致缓冲区溢出
+    // SBUS帧25字节，71.4Hz = 每秒1785字节，2048字节可容纳约1.15秒的数据
+    ESP_ERROR_CHECK(uart_driver_install(UART_SBUS, 2048, 0, 50, &sbus_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_SBUS, &uart_config));
 
     // 设置GPIO22作为UART2接收引脚
