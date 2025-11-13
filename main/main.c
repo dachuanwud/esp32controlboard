@@ -704,30 +704,30 @@ static void http_server_task(void *pvParameters)
 
 /**
  * 状态监控任务
- * 监控系统状态并控制LED蓝灯闪烁指示系统运行状态
+ * 监控系统状态并控制LED红灯闪烁指示系统运行状态
  */
 static void status_monitor_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "状态监控任务已启动 (LED蓝灯闪烁已启用)");
+    ESP_LOGI(TAG, "状态监控任务已启动 (LED红灯闪烁已启用)");
 
-    // LED蓝灯闪烁控制变量
-    static bool blue_led_state = false;  // false=熄灭, true=点亮
+    // LED红灯闪烁控制变量
+    static bool red_led_state = false;  // false=熄灭, true=点亮
     static uint32_t led_tick_count = 0;
     const uint32_t LED_BLINK_MS = 250;  // 闪烁间隔250ms (2Hz频率: 亮250ms/灭250ms)
     const uint32_t TASK_DELAY_MS = 50;  // 任务延迟50ms，提高LED闪烁平滑度和精确度
     const uint32_t LED_TOGGLE_INTERVAL = LED_BLINK_MS / TASK_DELAY_MS;  // 每5次循环切换一次(250ms)
 
     while (1) {
-        // LED蓝灯闪烁控制 - 低优先级任务，不影响核心功能
+        // LED红灯闪烁控制 - 低优先级任务，不影响核心功能
         // 注意：共阳极LED，低电平(0)点亮，高电平(1)熄灭
         led_tick_count++;
         if (led_tick_count >= LED_TOGGLE_INTERVAL) {
             led_tick_count = 0;
-            blue_led_state = !blue_led_state;
+            red_led_state = !red_led_state;
             
-            // 控制两组LED的蓝色，同步闪烁
-            gpio_set_level(LED1_BLUE_PIN, blue_led_state ? 0 : 1);  // 0=点亮, 1=熄灭
-            gpio_set_level(LED2_BLUE_PIN, blue_led_state ? 0 : 1);
+            // 控制两组LED的红色，同步闪烁
+            gpio_set_level(LED1_RED_PIN, red_led_state ? 0 : 1);  // 0=点亮, 1=熄灭
+            gpio_set_level(LED2_RED_PIN, red_led_state ? 0 : 1);
         }
 
         // 系统状态监控 - 减少日志频率，每30秒输出一次系统状态
