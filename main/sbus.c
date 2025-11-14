@@ -278,9 +278,21 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     }
 #endif
 
-    // SBUS原始值映射到标准PWM范围 (282~1722 → 1050~1950)
+    // 🔧 SBUS原始值映射到标准PWM范围 (282~1722 → 1050~1950)
+    // 改进映射公式：使用四舍五入提高精度，减少舍入误差
+    // 公式：(raw - 282) * 5 / 8 + 1050
+    // 改进：先乘以5，加上4（相当于+0.5*8），再除以8，实现四舍五入
     for (int i = 0; i < LEN_CHANEL; i++) {
-        channel[i] = (raw_channel[i] - 282) * 5 / 8 + 1050;
+        int32_t raw = raw_channel[i];
+        int32_t diff = raw - 282;
+        // 使用四舍五入：先乘以5，加上4（相当于+0.5*8），再除以8
+        int32_t mapped = (diff * 5 + (diff >= 0 ? 4 : -4)) / 8 + 1050;
+        
+        // 限制在有效范围内
+        if (mapped > 1950) mapped = 1950;
+        if (mapped < 1050) mapped = 1050;
+        
+        channel[i] = (uint16_t)mapped;
     }
 
 #if ENABLE_SBUS_DEBUG
