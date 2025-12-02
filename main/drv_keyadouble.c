@@ -12,6 +12,11 @@ static const char *TAG = "DRV_KEYA";
 #define DRIVER_RX_ID 0x05800000 // 接收基础ID (驱动器->控制)
 #define DRIVER_HEARTBEAT_ID 0x07000000 // 心跳包ID (驱动器->控制)
 
+// 控制器心跳ID定义 (用于多控制器仲裁)
+#define CONTROLLER_ID 0x01 // A控制器ID
+#define CONTROLLER_HEARTBEAT_ID 0x1800001 // 控制器心跳帧ID
+#define HEARTBEAT_STATUS_ACTIVE 0x01 // 状态：正常控车中
+
 // 电机通道定义
 #define MOTOR_CHANNEL_A 0x01 // A路电机(左侧)
 #define MOTOR_CHANNEL_B 0x02 // B路电机(右侧)
@@ -24,6 +29,9 @@ static const char *TAG = "DRV_KEYA";
 // 外部变量
 uint8_t bk_flag_left = 0;
 uint8_t bk_flag_right = 0;
+
+// 控制器心跳序列号
+static uint16_t heartbeat_seq = 0;
 
 // CAN接收任务句柄
 static TaskHandle_t can_rx_task_handle = NULL;
@@ -89,7 +97,7 @@ static esp_err_t can_bus_recovery(void)
     }
     
     // 记录恢复前的状态
-    ESP_LOGW(TAG, "CAN总线需要恢复: %s | 状态: %" PRIu32 ", TX错误: %" PRIu32 ", RX错误: %" PRIu32,
+    ESP_LOGW(TAG, "CAN总线需要恢复: %s | 状态: %lu, TX错误: %lu, RX错误: %lu",
              reason,
              (unsigned long)status_info.state,
              (unsigned long)status_info.tx_error_counter,
@@ -123,8 +131,8 @@ static esp_err_t can_bus_recovery(void)
     vTaskDelay(pdMS_TO_TICKS(20));
     ret = twai_get_status_info(&status_info);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "CAN总线恢复成功 (恢复次数: %" PRIu32 ") | 状态: %" PRIu32 ", TX错误: %" PRIu32 ", RX错误: %" PRIu32,
-                 can_recovery_count,
+        ESP_LOGI(TAG, "CAN总线恢复成功 (恢复次数: %lu) | 状态: %lu, TX错误: %lu, RX错误: %lu",
+                 (unsigned long)can_recovery_count,
                  (unsigned long)status_info.state,
                  (unsigned long)status_info.tx_error_counter,
                  (unsigned long)status_info.rx_error_counter);
@@ -268,7 +276,7 @@ static void keya_send_data(uint32_t id, uint8_t* data)
         // 获取并打印CAN状态信息
         ret = twai_get_status_info(&status_info);
         if (ret == ESP_OK) {
-            ESP_LOGW(TAG, "CAN状态 - 状态: %" PRIu32 ", TX错误: %" PRIu32 ", RX错误: %" PRIu32,
+            ESP_LOGW(TAG, "CAN状态 - 状态: %lu, TX错误: %lu, RX错误: %lu",
                      (unsigned long)status_info.state,
                      (unsigned long)status_info.tx_error_counter,
                      (unsigned long)status_info.rx_error_counter);
@@ -361,6 +369,43 @@ static void motor_control(uint8_t cmd_type, uint8_t channel, int8_t speed)
 }
 
 /**
+ * 发送控制器心跳帧
+ * 在发送电机速度命令前调用，通知其他控制器本机正在控车
+ * @param speed_left 左电机目标速度(-100到100)
+ * @param speed_right 右电机目标速度(-100到100)
+ */
+static void send_controller_heartbeat(int8_t speed_left, int8_t speed_right)
+{
+    uint8_t tx_data[8] = {0};
+    
+    // Byte 0: 控制器ID
+    tx_data[0] = CONTROLLER_ID;
+    
+    // Byte 1: 状态 (0x01 = 正常控车中)
+    tx_data[1] = HEARTBEAT_STATUS_ACTIVE;
+    
+    // Byte 2-3: 序列号 (大端序)
+    tx_data[2] = (heartbeat_seq >> 8) & 0xFF;
+    tx_data[3] = heartbeat_seq & 0xFF;
+    heartbeat_seq++; // 序列号递增
+    
+    // Byte 4-5: A路电机目标速度 (转换为-10000~+10000，大端序)
+    int16_t sp_a = (int16_t)speed_left * 100;
+    tx_data[4] = (sp_a >> 8) & 0xFF;
+    tx_data[5] = sp_a & 0xFF;
+    
+    // Byte 6-7: B路电机目标速度 (转换为-10000~+10000，大端序)
+    int16_t sp_b = (int16_t)speed_right * 100;
+    tx_data[6] = (sp_b >> 8) & 0xFF;
+    tx_data[7] = sp_b & 0xFF;
+    
+    // 发送心跳帧
+    keya_send_data(CONTROLLER_HEARTBEAT_ID, tx_data);
+    
+    ESP_LOGD(TAG, "💓 心跳: seq=%d, spd_L=%d, spd_R=%d", heartbeat_seq - 1, speed_left, speed_right);
+}
+
+/**
  * 初始化电机驱动
  */
 esp_err_t drv_keyadouble_init(void)
@@ -432,10 +477,13 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right)
         bk_flag_right = 0; // 0为刹车
     }
 
+    // 💓 发送控制器心跳帧（通知其他控制器本机正在控车）
+    send_controller_heartbeat(speed_left, speed_right);
+    
     // 🔒 可靠性优化：每次发送速度命令前都发送使能命令
     // 这样可以避免看门狗超时（1000ms）导致的驱动器失能问题
     // 即使控制间隔超过1000ms，也能确保电机始终处于使能状态
-    // 代价：CAN帧数从2帧/次增加到4帧/次，但在250Kbps下仍在可接受范围
+    // 代价：CAN帧数从2帧/次增加到5帧/次（含心跳），但在250Kbps下仍在可接受范围
     motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0); // 使能A路(左侧)
     motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0); // 使能B路(右侧)
     motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left); // A路(左侧)速度

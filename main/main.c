@@ -360,7 +360,7 @@ static void motor_control_task(void *pvParameters)
 {
     sbus_data_t sbus_data;
     motor_cmd_t motor_cmd;
-    uint32_t cmd_timeout = 0;
+    uint32_t cmd_last_time = 0;  // 🔧 修复：使用时间戳而非超时值，避免溢出问题
     bool sbus_control = false;
 
     ESP_LOGI(TAG, "电机控制任务已启动");
@@ -370,7 +370,7 @@ static void motor_control_task(void *pvParameters)
         if (xQueueReceive(cmd_queue, &motor_cmd, 0) == pdPASS) {
             // 收到CMD_VEL命令，优先处理
             parse_cmd_vel(motor_cmd.speed_left, motor_cmd.speed_right);
-            cmd_timeout = xTaskGetTickCount() + pdMS_TO_TICKS(1000); // 1秒超时
+            cmd_last_time = xTaskGetTickCount();  // 🔧 修复：记录接收时间戳
             sbus_control = false;
 
             // 保存电机状态用于Web接口
@@ -386,7 +386,9 @@ static void motor_control_task(void *pvParameters)
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
             // 如果没有活跃的CMD_VEL命令或CMD_VEL已超时，则处理SBUS
-            if (sbus_control || xTaskGetTickCount() > cmd_timeout) {
+            // 🔧 修复：使用差值比较避免时间戳溢出问题
+            uint32_t time_since_cmd = xTaskGetTickCount() - cmd_last_time;
+            if (sbus_control || time_since_cmd > pdMS_TO_TICKS(1000)) {
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
 
