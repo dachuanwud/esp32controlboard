@@ -120,8 +120,10 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         }
 
         if (current_low_speed) {
-            sp_fb /= 2;
-            sp_lr /= 2;
+            // 🔧 低速档：速度范围限制为 -20 ~ +20 (缩放比例 0.2)
+            // 正常速度 -100 ~ +100 → 低速档 -20 ~ +20
+            sp_fb = (sp_fb * 20) / 100;
+            sp_lr = (sp_lr * 20) / 100;
         }
 
         ESP_LOGD(TAG, "🎯 Control values - FB:%d LR:%d", sp_fb, sp_lr);

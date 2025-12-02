@@ -161,8 +161,9 @@ static void can_rx_task(void *pvParameters)
                 rx_count++;
                 batch_count++;
                 
-                // 打印CAN接收消息的详细信息
-                ESP_LOGI(TAG, "📥 CAN RX #%lu: ID=0x%08" PRIX32 " (%s), DLC=%d, RTR=%d, Data=[%02X %02X %02X %02X %02X %02X %02X %02X]",
+                // 打印CAN接收消息的详细信息（使用DEBUG级别，减少日志输出对性能的影响）
+                // 如果需要调试CAN接收，可以通过日志级别控制启用
+                ESP_LOGD(TAG, "📥 CAN RX #%lu: ID=0x%08" PRIX32 " (%s), DLC=%d, RTR=%d, Data=[%02X %02X %02X %02X %02X %02X %02X %02X]",
                          (unsigned long)rx_count,
                          message.identifier,
                          message.extd ? "EXT" : "STD",

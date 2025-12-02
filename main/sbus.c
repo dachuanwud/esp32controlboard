@@ -304,7 +304,7 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
 #endif
 
     // ⚡ 性能优化：减少日志输出频率，降低CPU占用
-    static uint16_t last_channels[16] = {0};
+    static uint16_t last_channels[LEN_CHANEL] = {0};
     static bool first_sbus_data = true;
     static uint32_t frame_count = 0;
     bool significant_change = false;
@@ -348,7 +348,7 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
 #endif
 
     // 更新保存的通道值
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < LEN_CHANEL; i++) {
         last_channels[i] = channel[i];
     }
     first_sbus_data = false;
