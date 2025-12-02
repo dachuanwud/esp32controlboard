@@ -207,8 +207,15 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             }
         }
 
-        // 执行电机控制
-        intf_move(left_speed, right_speed);
+        // 🔧 优化：当SBUS解析出的速度为0时，不发送CAN消息
+        // 这样可以减少CAN总线负载，避免在静止状态下持续发送无意义的停止命令
+        if (left_speed == 0 && right_speed == 0) {
+            // 速度为0，跳过CAN消息发送
+            ESP_LOGD(TAG, "💤 速度为0，跳过CAN消息发送");
+        } else {
+            // 速度不为0，执行电机控制并发送CAN消息
+            intf_move(left_speed, right_speed);
+        }
 
         // 更新上次速度值
         last_left_speed = left_speed;
@@ -218,8 +225,9 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         update_last_channels(ch_val);
     }
 
-    // ⚡ 性能优化：移除了"无变化则跳过"的逻辑
-    // 现在每次调用都会发送CAN命令，确保实时性和准确性
+    // ⚡ 性能优化：当SBUS解析出的速度为0时，不发送CAN消息
+    // 这样可以减少CAN总线负载，避免在静止状态下持续发送无意义的停止命令
+    // 只有当速度不为0时，才会发送CAN命令，确保实时控制
 
     return 0;
 }
