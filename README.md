@@ -37,7 +37,7 @@ ESP32 控制板 Web OTA 系统是一个**企业级**的嵌入式控制解决方�
 ### ⚡ 高性能电机控制
 - **🚗 CAN 总线通信**: 250kbps 高速 CAN 通信，非阻塞发送模式
 - **🎯 精确控制**: 支持 LKBLS481502 双通道电机驱动器
-- **🔄 差速算法**: 智能差速转弯控制，支持5种运动模式（[算法详解](docs/DIFFERENTIAL_CONTROL_ALGORITHM.md)）
+- **🔄 差速算法**: 智能差速转弯控制，支持5种运动模式（[控制逻辑实现](main/channel_parse.c)）
 - **⚡ 超低延迟**: 端到端延迟仅3-5ms，控制频率高达200-500Hz
 - **🛡️ 安全保护**: 超时保护、自动刹车、故障检测
 - **📊 实时反馈**: 电机状态监控和性能分析
@@ -150,20 +150,29 @@ esp32controlboard/
 │   ├── 📄 vite.config.ts             # Vite 构建配置
 │   └── 📄 tsconfig.json              # TypeScript 配置
 ├── 📂 docs/                          # 📚 项目文档 (中文)
-│   ├── 📄 README.md                  # 文档导航中心
-│   ├── 📄 SBUS_TO_CAN_DATAFLOW.md    # SBUS到CAN完整数据流
-│   ├── 📄 DIFFERENTIAL_CONTROL_ALGORITHM.md  # 差速控制算法详解
 │   ├── 📂 01-开发指南/                # 🛠️ 开发环境和流程
+│   │   ├── 📄 README.md              # 文档导航中心
+│   │   ├── 📄 环境搭建指南.md
+│   │   ├── 📄 编译烧录指南.md
+│   │   ├── 📄 调试方法指南.md
+│   │   ├── 📄 编码规范指南.md
+│   │   └── 📄 Git版本管理.md
 │   ├── 📂 02-模块文档/                # 🔧 功能模块详解
+│   │   ├── 📄 README.md
+│   │   ├── 📄 SBUS接收模块.md
+│   │   └── 📄 CAN通信模块.md
 │   ├── 📂 03-硬件文档/                # ⚡ 硬件设计说明
-│   ├── 📂 04-协议文档/                # � 通信协议规范
+│   │   └── 📄 README.md
+│   ├── 📂 04-协议文档/                # 📡 通信协议规范
+│   │   ├── 📄 README.md
+│   │   ├── 📄 can_protocol_summary.md
+│   │   └── 📄 数据流分析.md
 │   ├── 📂 05-故障排除/                # 🔍 问题解决方案
+│   │   ├── 📄 README.md
+│   │   └── 📄 常见问题解答.md
 │   └── 📂 06-系统架构/                # 🏗️ 架构设计文档
-├── 📄 PERFORMANCE_OPTIMIZATION_REPORT.md  # 性能优化详细报告
-├── � tools/                         # 🛠️ 开发工具集
-│   ├── � can_tool.py                # CAN总线调试工具
-│   ├── 📄 esp32_tool.bat             # ESP32开发工具脚本
-│   └── 📄 quick.bat                  # 快速开发脚本
+│       ├── 📄 README.md
+│       └── 📄 FreeRTOS架构.md
 ├── 📄 CMakeLists.txt                 # 主项目构建配置
 ├── 📄 sdkconfig                      # ESP-IDF项目配置
 ├── 📄 partitions.csv                 # Flash分区表定义
@@ -249,9 +258,9 @@ esp32controlboard/
 
 #### 📚 详细文档
 
-- 📖 [性能优化详细报告](PERFORMANCE_OPTIMIZATION_REPORT.md) - 完整的优化分析和测试数据
-- 📊 [SBUS到CAN数据流](docs/SBUS_TO_CAN_DATAFLOW.md) - 完整的数据流路径和代码位置
-- 🎯 [差速控制算法详解](docs/DIFFERENTIAL_CONTROL_ALGORITHM.md) - 5种运动模式和算法实现
+- 📖 [FreeRTOS架构与性能优化](docs/06-系统架构/FreeRTOS架构.md) - 核心任务调度和性能调优策略
+- 📊 [数据流分析](docs/04-协议文档/数据流分析.md) - SBUS到CAN的完整数据流与关键指标
+- 🎯 [通道解析与差速控制代码](main/channel_parse.c) - 运动模式与差速算法实现
 
 ## 🌐 Web OTA 系统
 
@@ -334,12 +343,12 @@ npm run build
 #### 🔧 硬件工程师
 1. ⚡ [硬件文档](docs/03-硬件文档/)
 2. 📡 [协议文档](docs/04-协议文档/)
-3. 🔍 [硬件测试指南](docs/05-故障排除/硬件测试指南.md)
+3. 🔍 [常见问题解答](docs/05-故障排除/常见问题解答.md)
 
 #### 📱 前端开发者
-1. 🌐 [Web OTA系统](docs/06-系统架构/Web-OTA系统.md)
-2. 📡 [HTTP API接口](docs/04-协议文档/HTTP-API接口.md)
-3. ☁️ [云端客户端](docs/02-模块文档/云端客户端模块.md)
+1. 🌐 [系统架构概览](docs/06-系统架构/README.md)
+2. 📡 [协议文档索引](docs/04-协议文档/README.md)
+3. ☁️ [模块文档总览](docs/02-模块文档/README.md)
 
 ## 📡 HTTP API 接口
 
@@ -432,45 +441,33 @@ Response:
 #### 🔧 **模块技术文档**
 - 📡 [SBUS接收模块](docs/02-模块文档/SBUS接收模块.md) - 遥控信号处理
 - 🚗 [CAN通信模块](docs/02-模块文档/CAN通信模块.md) - 电机控制通信
-- 🌐 [WiFi管理模块](docs/02-模块文档/WiFi管理模块.md) - 网络连接管理
-- 🔄 [OTA管理模块](docs/02-模块文档/OTA管理模块.md) - 固件无线更新
-- ☁️ [云端客户端模块](docs/02-模块文档/云端客户端模块.md) - 云服务集成
+- 📘 [模块文档索引](docs/02-模块文档/README.md) - 其他模块规划与说明
 
 #### ⚡ **硬件设计文档**
-- 🔌 [引脚映射表](docs/03-硬件文档/引脚映射表.md) - GPIO功能分配
-- 📋 [组件清单](docs/03-硬件文档/组件清单.md) - 硬件组件规格
-- 🗂️ [分区表配置](docs/03-硬件文档/分区表配置.md) - Flash分区设计
+- 📘 [硬件文档索引](docs/03-硬件文档/README.md) - 引脚、原理图与规格概览
 
 #### 📡 **通信协议文档**
-- 🎮 [SBUS协议详解](docs/04-协议文档/SBUS协议详解.md) - 遥控通信协议
-- 🚗 [CAN协议详解](docs/04-协议文档/CAN协议详解.md) - 电机控制协议
-- 🌐 [HTTP-API接口](docs/04-协议文档/HTTP-API接口.md) - Web服务接口
+- 📘 [协议文档索引](docs/04-协议文档/README.md) - 协议总览
+- 🚗 [CAN协议概要](docs/04-协议文档/can_protocol_summary.md) - 电机控制帧格式
 - 📊 [数据流分析](docs/04-协议文档/数据流分析.md) - 系统数据流向
-- 🔄 [SBUS到CAN数据流](docs/SBUS_TO_CAN_DATAFLOW.md) - 完整数据流路径和代码位置
-- 🎯 [差速控制算法](docs/DIFFERENTIAL_CONTROL_ALGORITHM.md) - 5种运动模式和算法实现
 
 #### 🔍 **故障排除指南**
-- ❓ [常见问题解答](docs/05-故障排除/常见问题解答.md) - 问题解决方案
-- 🛠️ [调试工具使用](docs/05-故障排除/调试工具使用.md) - 调试工具指南
-- ⚡ [硬件测试指南](docs/05-故障排除/硬件测试指南.md) - 硬件验证方法
+- 📘 [故障排除导航](docs/05-故障排除/README.md) - 常见问题索引
+- ❓ [常见问题解答](docs/05-故障排除/常见问题解答.md) - 常见问题解决方案
 
 #### 🏗️ **系统架构文档**
-- 🎯 [整体架构设计](docs/06-系统架构/整体架构设计.md) - 系统总体设计
-- 🔄 [FreeRTOS架构](docs/06-系统架构/FreeRTOS架构.md) - 实时系统架构
-- 🌐 [Web-OTA系统](docs/06-系统架构/Web-OTA系统.md) - 无线更新架构
+- 📘 [系统架构索引](docs/06-系统架构/README.md) - 总体架构设计
+- 🔄 [FreeRTOS架构](docs/06-系统架构/FreeRTOS架构.md) - 实时系统架构与优化
 
 ### 📖 按主题导航
 
 | 主题 | 核心文档 | 相关文档 |
 |------|----------|----------|
 | **🚀 快速入门** | [环境搭建](docs/01-开发指南/环境搭建指南.md) | [编译烧录](docs/01-开发指南/编译烧录指南.md) |
-| **🎮 遥控功能** | [SBUS模块](docs/02-模块文档/SBUS接收模块.md) | [SBUS协议](docs/04-协议文档/SBUS协议详解.md) |
-| **🚗 电机控制** | [CAN模块](docs/02-模块文档/CAN通信模块.md) | [CAN协议](docs/04-协议文档/CAN协议详解.md) |
-| **⚡ 性能优化** | [性能优化报告](PERFORMANCE_OPTIMIZATION_REPORT.md) | [数据流分析](docs/SBUS_TO_CAN_DATAFLOW.md) |
-| **🎯 差速算法** | [差速控制算法](docs/DIFFERENTIAL_CONTROL_ALGORITHM.md) | [通道解析](docs/02-模块文档/SBUS接收模块.md) |
-| **🌐 Web功能** | [HTTP服务器](docs/02-模块文档/HTTP服务器模块.md) | [API接口](docs/04-协议文档/HTTP-API接口.md) |
-| **🔄 OTA更新** | [OTA管理](docs/02-模块文档/OTA管理模块.md) | [Web-OTA](docs/06-系统架构/Web-OTA系统.md) |
-| **☁️ 云端集成** | [云端客户端](docs/02-模块文档/云端客户端模块.md) | [数据流分析](docs/04-协议文档/数据流分析.md) |
+| **🎮 遥控功能** | [SBUS模块](docs/02-模块文档/SBUS接收模块.md) | [数据流分析](docs/04-协议文档/数据流分析.md) |
+| **🚗 电机控制** | [CAN模块](docs/02-模块文档/CAN通信模块.md) | [CAN协议概要](docs/04-协议文档/can_protocol_summary.md) |
+| **⚡ 性能优化** | [FreeRTOS架构](docs/06-系统架构/FreeRTOS架构.md) | [数据流分析](docs/04-协议文档/数据流分析.md) |
+| **🎯 差速算法** | [控制逻辑源码](main/channel_parse.c) | [SBUS模块](docs/02-模块文档/SBUS接收模块.md) |
 
 ## 🛠️ 开发工具
 
