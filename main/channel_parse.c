@@ -106,7 +106,8 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         static bool last_low_speed_mode = false;
         
         // CH4 遥控使能开关：1050=使能，1500/1950=禁用
-        bool current_remote_enabled = (ch_val[4] == 1050);
+        // 使用范围判断（<=1100）而非严格相等，容忍SBUS信号波动（±50）
+        bool current_remote_enabled = (ch_val[4] <= 1100);
         // CH6 单手模式开关：1950时启用
         bool current_single_hand = (ch_val[6] == 1950);
         // CH7 低速模式开关：1950时启用
