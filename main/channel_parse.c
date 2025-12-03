@@ -80,6 +80,7 @@ static int8_t cal_offset(int8_t v1, int8_t v2)
  * - 通道0 (ch_val[0]): 左右方向控制，右>0
  * - 通道2 (ch_val[2]): 前后方向控制，前>0
  * - 通道3 (ch_val[3]): 备用左右方向控制（单手模式）
+ * - 通道4 (ch_val[4]): 遥控使能开关，1050=使能，1500/1950=禁用
  * - 通道6 (ch_val[6]): 单手模式开关，1950时启用
  * - 通道7 (ch_val[7]): 低速模式开关，1950时启用
  */
@@ -100,10 +101,22 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
 
         // 记录特殊模式状态变化
+        static bool last_remote_enabled = false;
         static bool last_single_hand_mode = false;
         static bool last_low_speed_mode = false;
+        
+        // CH4 遥控使能开关：1050=使能，1500/1950=禁用
+        bool current_remote_enabled = (ch_val[4] == 1050);
+        // CH6 单手模式开关：1950时启用
         bool current_single_hand = (ch_val[6] == 1950);
+        // CH7 低速模式开关：1950时启用
         bool current_low_speed = (ch_val[7] == 1950);
+
+        if (current_remote_enabled != last_remote_enabled) {
+            ESP_LOGI(TAG, "🔒 Remote control: %s (CH4=%d)", 
+                     current_remote_enabled ? "ENABLED" : "DISABLED", ch_val[4]);
+            last_remote_enabled = current_remote_enabled;
+        }
 
         if (current_single_hand != last_single_hand_mode) {
             ESP_LOGI(TAG, "🤟 Single-hand mode: %s", current_single_hand ? "ON" : "OFF");
@@ -113,6 +126,11 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         if (current_low_speed != last_low_speed_mode) {
             ESP_LOGI(TAG, "🐌 Low speed mode: %s", current_low_speed ? "ON" : "OFF");
             last_low_speed_mode = current_low_speed;
+        }
+
+        // 🔒 如果遥控未使能，直接返回，不发送任何 CAN 信号
+        if (!current_remote_enabled) {
+            return 0;
         }
 
         if (current_single_hand) {

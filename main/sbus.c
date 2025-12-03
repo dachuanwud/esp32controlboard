@@ -312,8 +312,9 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     frame_count++;
 
     // 检查关键通道是否有显著变化（阈值从20增加到30，减少打印频率）
-    uint8_t key_ch[] = {0, 1, 2, 3, 6, 7};
-    for (int i = 0; i < 6; i++) {
+    // CH4 为遥控使能开关，也加入关键通道
+    uint8_t key_ch[] = {0, 1, 2, 3, 4, 6, 7};
+    for (int i = 0; i < 7; i++) {
         uint8_t ch = key_ch[i];
         if (abs((int16_t)channel[ch] - (int16_t)last_channels[ch]) > 30) {
             significant_change = true;
@@ -335,14 +336,15 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     (void)first_sbus_data;
 #else
     // 正常模式：只在有显著变化时打印关键通道
+    // CH4 为遥控使能开关（1050=使能，1500/1950=禁用）
     if (first_sbus_data || significant_change) {
-        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 关键通道: CH0:%4u CH1:%4u CH2:%4u CH3:%4u CH6:%4u CH7:%4u",
-                 frame_count, channel[0], channel[1], channel[2], channel[3], channel[6], channel[7]);
+        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 关键通道: CH0:%4u CH2:%4u CH3:%4u CH4:%4u CH6:%4u CH7:%4u",
+                 frame_count, channel[0], channel[2], channel[3], channel[4], channel[6], channel[7]);
     } else {
         // 每100帧打印一次状态（从10增加到100），减少日志负担
         if (frame_count % 100 == 0) {
-            ESP_LOGD(TAG, "🎮 SBUS活跃 - 帧#%lu: CH0:%4u CH2:%4u CH3:%4u",
-                     frame_count, channel[0], channel[2], channel[3]);
+            ESP_LOGD(TAG, "🎮 SBUS活跃 - 帧#%lu: CH0:%4u CH2:%4u CH4:%4u",
+                     frame_count, channel[0], channel[2], channel[4]);
         }
     }
 #endif
