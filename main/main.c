@@ -311,40 +311,46 @@ static void cmd_uart_task(void *pvParameters)
                 uart_read_bytes(UART_CMD, &data, 1, portMAX_DELAY);
 
                 if ((g_cmd_pt & 0x80) == 0) { // 数据未解析
-                    if (g_cmd_pt > (LEN_CMD - 1)) {
+                    // 🔧 修复：在写入前检查边界，防止数组越界
+                    if (g_cmd_pt >= LEN_CMD) {
                         // 缓冲区满，重新开始
                         g_cmd_pt = 0;
                     }
 
-                    // 存入缓冲区
-                    g_cmd_rx_buf[g_cmd_pt] = data;
-                    g_cmd_pt++;
+                    // 存入缓冲区（确保索引在有效范围内）
+                    if (g_cmd_pt < LEN_CMD) {
+                        g_cmd_rx_buf[g_cmd_pt] = data;
+                        g_cmd_pt++;
 
-                    // 判断帧头
-                    if ((g_cmd_pt == 1) && (data != 0xff)) {
-                        g_cmd_pt--; // 回退，重新等待
-                    } else if ((g_cmd_pt == 2) && (data != 0x2)) {
-                        g_cmd_pt--; // 回退，重新等待
-                    } else if (g_cmd_pt == 5) {
-                        // 判断帧尾
-                        if (data == 0x00) {
-                            // 提取电机速度命令
-                            motor_cmd.speed_left = (int8_t)g_cmd_rx_buf[2];
-                            motor_cmd.speed_right = (int8_t)g_cmd_rx_buf[3];
+                        // 判断帧头
+                        if ((g_cmd_pt == 1) && (data != 0xff)) {
+                            g_cmd_pt--; // 回退，重新等待
+                        } else if ((g_cmd_pt == 2) && (data != 0x2)) {
+                            g_cmd_pt--; // 回退，重新等待
+                        } else if (g_cmd_pt == 5) {
+                            // 判断帧尾
+                            if (data == 0x00) {
+                                // 提取电机速度命令
+                                motor_cmd.speed_left = (int8_t)g_cmd_rx_buf[2];
+                                motor_cmd.speed_right = (int8_t)g_cmd_rx_buf[3];
 
-                            // 发送到队列
-                            if (xQueueSend(cmd_queue, &motor_cmd, 0) != pdPASS) {
-                                ESP_LOGW(TAG, "CMD队列已满");
+                                // 发送到队列
+                                if (xQueueSend(cmd_queue, &motor_cmd, 0) != pdPASS) {
+                                    ESP_LOGW(TAG, "CMD队列已满");
+                                }
+
+                                // 打印调试信息
+                                ESP_LOGI(TAG, "CMD received: %d %d",
+                                        motor_cmd.speed_left, motor_cmd.speed_right);
+
+                                g_cmd_pt = 0; // 清零，等待下一帧数据的解析
+                            } else {
+                                g_cmd_pt = 0; // 数据错误，重新等待
                             }
-
-                            // 打印调试信息
-                            ESP_LOGI(TAG, "CMD received: %d %d",
-                                    motor_cmd.speed_left, motor_cmd.speed_right);
-
-                            g_cmd_pt = 0; // 清零，等待下一帧数据的解析
-                        } else {
-                            g_cmd_pt = 0; // 数据错误，重新等待
                         }
+                    } else {
+                        // 索引超出范围，重置
+                        g_cmd_pt = 0;
                     }
                 }
             }
@@ -399,9 +405,9 @@ static void motor_control_task(void *pvParameters)
             }
         }
 
-        // 🔄 调整为100ms延迟，与STM32项目保持一致
-        // 降低控制频率，减少CPU占用，与STM32主循环频率一致
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // 🔄 调整为50ms延迟，控制频率20Hz（原为100ms/10Hz）
+        // 提高控制频率一倍，提升响应速度
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -567,14 +573,15 @@ static void wifi_management_task(void *pvParameters)
     static bool cloud_client_initialized = false;
     static uint32_t last_wifi_check_time = 0;
     static uint32_t wifi_disconnect_count = 0;
-    const uint32_t WIFI_CHECK_INTERVAL_MS = 60000; // 增加到60秒检查一次
-    const uint32_t MIN_RECONNECT_INTERVAL_MS = 120000; // 最少2分钟才能重连一次
+    const uint32_t WIFI_CHECK_INTERVAL_TICKS = pdMS_TO_TICKS(60000); // 60秒检查一次
+    const uint32_t MIN_RECONNECT_INTERVAL_TICKS = pdMS_TO_TICKS(120000); // 最少2分钟才能重连一次
 
     while (1) {
-        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        uint32_t current_time = xTaskGetTickCount();
 
         // 只在指定间隔内检查Wi-Fi状态
-        if (current_time - last_wifi_check_time >= WIFI_CHECK_INTERVAL_MS) {
+        // 🔧 修复：使用tick数进行比较，避免溢出问题，与其他代码保持一致
+        if (current_time - last_wifi_check_time >= WIFI_CHECK_INTERVAL_TICKS) {
             last_wifi_check_time = current_time;
 
             // 检查Wi-Fi连接状态
@@ -584,7 +591,7 @@ static void wifi_management_task(void *pvParameters)
 
                 // 只有在足够的时间间隔后才尝试重连，避免频繁重连
                 static uint32_t last_reconnect_time = 0;
-                if (current_time - last_reconnect_time >= MIN_RECONNECT_INTERVAL_MS) {
+                if (current_time - last_reconnect_time >= MIN_RECONNECT_INTERVAL_TICKS) {
                     ESP_LOGI(TAG, "🔄 Attempting Wi-Fi reconnection...");
                     last_reconnect_time = current_time;
 
@@ -602,8 +609,10 @@ static void wifi_management_task(void *pvParameters)
 
                     cloud_client_initialized = false;  // 重置云客户端状态
                 } else {
+                    uint32_t remaining_ticks = MIN_RECONNECT_INTERVAL_TICKS - (current_time - last_reconnect_time);
+                    uint32_t remaining_ms = remaining_ticks * portTICK_PERIOD_MS;
                     ESP_LOGD(TAG, "⏳ Waiting for reconnection interval (%" PRIu32 "s remaining)",
-                             (MIN_RECONNECT_INTERVAL_MS - (current_time - last_reconnect_time)) / 1000);
+                             remaining_ms / 1000);
                 }
             } else {
                 // Wi-Fi已连接，重置断开计数
