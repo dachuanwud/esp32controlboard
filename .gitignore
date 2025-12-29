@@ -81,6 +81,9 @@ web_client/pnpm-debug.log*
 # Cursor AI IDE
 .cursor/
 
+# Serena AI 工具配置
+.serena/
+
 # Visual Studio Code
 .vscode/settings.json
 .vscode/launch.json
@@ -208,3 +211,184 @@ tmp/
 # 配置文件中的敏感信息
 config/secrets.json
 config/production.json
+
+# ===========================================
+# 文档和媒体文件（非代码类型）
+# ===========================================
+
+# PDF 文档（如果不需要版本控制）
+*.pdf
+
+# 图片文件
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.ico
+*.svg
+*.webp
+*.tiff
+*.tif
+*.psd
+*.ai
+*.eps
+
+# 视频文件
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.webm
+*.m4v
+
+# 音频文件
+*.mp3
+*.wav
+*.flac
+*.aac
+*.ogg
+*.wma
+*.m4a
+
+# Office 文档
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.odt
+*.ods
+*.odp
+
+# 其他文档格式
+*.rtf
+*.pages
+*.numbers
+*.key
+
+# ===========================================
+# 二进制和可执行文件
+# ===========================================
+
+# 更多二进制文件格式
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.dll.a
+*.so.*
+
+# 固件和镜像文件
+*.img
+*.iso
+*.dmg
+*.vmdk
+*.vdi
+
+# 调试和符号文件
+*.dSYM
+*.pdb
+*.idb
+*.ilk
+
+# ===========================================
+# Docker 相关文件
+# ===========================================
+
+# Docker 覆盖文件（通常包含本地配置）
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Docker 构建缓存
+.dockerignore.local
+
+# ===========================================
+# 包管理器和构建工具缓存
+# ===========================================
+
+# npm/yarn/pnpm 缓存
+.npm/
+.yarn/
+.pnpm-store/
+package-lock.json.bak
+yarn.lock.bak
+
+# Python 相关（如果有）
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Rust 相关（如果有）
+target/
+Cargo.lock.bak
+
+# Go 相关（如果有）
+*.exe
+*.test
+*.prof
+vendor/
+
+# ===========================================
+# 其他非代码文件
+# ===========================================
+
+# 字体文件
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.eot
+
+# 数据文件
+*.csv.bak
+*.json.bak
+*.xml.bak
+
+# 配置文件备份
+*.conf.bak
+*.ini.bak
+*.yaml.bak
+*.yml.bak
+
+# 系统文件
+.DS_Store?
+.Spotlight-V100
+.Trashes
+._.DS_Store
+
+# 编辑器自动保存文件
+*~
+.#*
+\#*#
+.*.sw[a-z]
+*.un~
+
+# 项目特定的大型文件
+firmware/
+binaries/
+releases/
+*.firmware
+
+# ===========================================
+# 项目特定文档文件
+# ===========================================
+
+# AI 助手生成的文档（通常不需要版本控制）
+CLAUDE.md
