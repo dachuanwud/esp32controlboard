@@ -370,10 +370,11 @@ esp_err_t drv_keyadouble_init(void) {
 
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  xTaskCreate(can_rx_task, "can_rx_task", 2048, NULL, 3, &can_rx_task_handle);
+  // 🔧 优化：提高 CAN RX 任务优先级到 8，确保及时清空接收队列
+  xTaskCreate(can_rx_task, "can_rx_task", 2048, NULL, 8, &can_rx_task_handle);
 
   can_recovery_count = 0;
-  ESP_LOGI(TAG, "Motor driver initialized (Normal Mode, Priority 3 RX Task)");
+  ESP_LOGI(TAG, "Motor driver initialized (Normal Mode, Priority 8 RX Task)");
   return ESP_OK;
 }
 
@@ -387,11 +388,43 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
   bk_flag_left = (speed_left != 0) ? 1 : 0;
   bk_flag_right = (speed_right != 0) ? 1 : 0;
 
+  // 🔧 优化：检查TX错误计数器，在接近BUS-OFF阈值前主动重置CAN控制器
+  // 心跳帧无ACK会导致TX错误+8，当计数器接近255时主动重置清零
+  twai_status_info_t status_info;
+  if (twai_get_status_info(&status_info) == ESP_OK) {
+    // 当TX错误计数器 > 200 时，主动重置CAN控制器，清零错误计数器
+    if (status_info.tx_error_counter > 200) {
+      ESP_LOGW(TAG, "⚠️ TX错误计数器过高(%lu)，主动重置CAN控制器",
+               (unsigned long)status_info.tx_error_counter);
+      twai_stop();
+      vTaskDelay(pdMS_TO_TICKS(10));
+      twai_start();
+    }
+  }
+
+  // 始终发送心跳帧
   send_controller_heartbeat(speed_left, speed_right);
-  motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
-  motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0);
+
+  // 🔧 优化：使能命令只在首次或速度从0变化时发送
+  static bool motor_enabled = false;
+  static int8_t last_speed_left = 0;
+  static int8_t last_speed_right = 0;
+
+  bool need_enable = !motor_enabled ||
+                     (last_speed_left == 0 && speed_left != 0) ||
+                     (last_speed_right == 0 && speed_right != 0);
+
+  if (need_enable) {
+    motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
+    motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0);
+    motor_enabled = true;
+  }
+
   motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left);
   motor_control(CMD_SPEED, MOTOR_CHANNEL_B, speed_right);
+
+  last_speed_left = speed_left;
+  last_speed_right = speed_right;
 
   return 0;
 }
