@@ -402,29 +402,11 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
     }
   }
 
-  // 始终发送心跳帧
   send_controller_heartbeat(speed_left, speed_right);
-
-  // 🔧 优化：使能命令只在首次或速度从0变化时发送
-  static bool motor_enabled = false;
-  static int8_t last_speed_left = 0;
-  static int8_t last_speed_right = 0;
-
-  bool need_enable = !motor_enabled ||
-                     (last_speed_left == 0 && speed_left != 0) ||
-                     (last_speed_right == 0 && speed_right != 0);
-
-  if (need_enable) {
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0);
-    motor_enabled = true;
-  }
-
+  motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
+  motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0);
   motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left);
   motor_control(CMD_SPEED, MOTOR_CHANNEL_B, speed_right);
-
-  last_speed_left = speed_left;
-  last_speed_right = speed_right;
 
   return 0;
 }
