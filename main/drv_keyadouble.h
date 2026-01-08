@@ -18,4 +18,10 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right);
  */
 esp_err_t drv_keyadouble_init(void);
 
+/**
+ * 打印CAN诊断信息
+ * 用于调试CAN总线发送问题
+ */
+void drv_keyadouble_print_diag(void);
+
 #endif /* DRV_KEYADOUBLE_H */
