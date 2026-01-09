@@ -15,16 +15,24 @@
 
 static const char *TAG = "MAIN";
 
+#if ENABLE_CMD_VEL
 // CMD_VEL接收缓冲区
+#if ENABLE_CMD_VEL
 static uint8_t g_cmd_rx_buf[LEN_CMD] = {0};
 static uint8_t g_cmd_pt = 0;
 
 // UART事件队列
 static QueueHandle_t cmd_uart_queue;
+#endif
+#endif
 
 // FreeRTOS任务句柄
 static TaskHandle_t sbus_task_handle = NULL;
+#if ENABLE_CMD_VEL
+#if ENABLE_CMD_VEL
 static TaskHandle_t cmd_task_handle = NULL;
+#endif
+#endif
 static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t status_task_handle = NULL;
 static TaskHandle_t wifi_task_handle = NULL;
@@ -53,15 +61,19 @@ typedef struct {
 // ============================================================================
 // FreeRTOS队列句柄
 static QueueHandle_t sbus_queue = NULL;
+#if ENABLE_CMD_VEL
 static QueueHandle_t cmd_queue = NULL;
+#endif
 
 // SBUS队列静态存储
 static StaticQueue_t sbus_queue_static_buffer;
 static uint8_t sbus_queue_static_storage[20 * sizeof(sbus_data_t)];
 
 // CMD_VEL队列静态存储
+#if ENABLE_CMD_VEL
 static StaticQueue_t cmd_queue_static_buffer;
 static uint8_t cmd_queue_static_storage[20 * sizeof(motor_cmd_t)];
+#endif
 
 // 全局状态变量（用于Web接口）
 uint16_t g_last_sbus_channels[16] = {1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
@@ -261,8 +273,11 @@ static void sbus_process_task(void *pvParameters)
     ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
 
     while (1) {
-        // 检查SBUS数据
-        if (sbus_get_data(sbus_raw_data)) {
+        if (sbus_wait_data_ready(pdMS_TO_TICKS(200)) == pdTRUE) {
+            // 检查SBUS数据
+            if (!sbus_get_data(sbus_raw_data)) {
+                continue;
+            }
             // 解析SBUS数据
             parse_sbus_msg(sbus_raw_data, ch_val);
 
@@ -283,15 +298,13 @@ static void sbus_process_task(void *pvParameters)
                 xQueueSend(sbus_queue, &sbus_data, 0);
                 // SBUS队列已满，覆盖旧数据
             }
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-
-        // 🔄 调整为100ms延迟，与STM32项目保持一致
-        // SBUS更新率：模拟模式14ms (71.4Hz)，高速模式7ms (142.9Hz)
-        // 100ms延迟可满足SBUS需求，降低CPU占用
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
+#if ENABLE_CMD_VEL
 /**
  * CMD_VEL UART接收任务
  * 接收CMD_VEL命令并通过队列发送给控制任务
@@ -357,21 +370,25 @@ static void cmd_uart_task(void *pvParameters)
         }
     }
 }
+#endif // ENABLE_CMD_VEL
 
 /**
  * 电机控制任务
- * 接收来自SBUS和CMD_VEL的命令，控制电机
+ * 接收来自SBUS（和CMD_VEL，如果启用）的命令，控制电机
  */
 static void motor_control_task(void *pvParameters)
 {
     sbus_data_t sbus_data;
+#if ENABLE_CMD_VEL
     motor_cmd_t motor_cmd;
     uint32_t cmd_last_time = 0;  // 🔧 修复：使用时间戳而非超时值，避免溢出问题
     bool sbus_control = false;
+#endif
 
     ESP_LOGI(TAG, "电机控制任务已启动");
 
     while (1) {
+#if ENABLE_CMD_VEL
         // 检查是否有CMD_VEL命令
         if (xQueueReceive(cmd_queue, &motor_cmd, 0) == pdPASS) {
             // 收到CMD_VEL命令，优先处理
@@ -383,11 +400,6 @@ static void motor_control_task(void *pvParameters)
             g_last_motor_left = motor_cmd.speed_left;
             g_last_motor_right = motor_cmd.speed_right;
             g_last_motor_update = xTaskGetTickCount();
-
-            // 注销LED指示 - 接收到CMD_VEL命令时，两组LED的绿色闪烁
-            // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
-            // gpio_set_level(LED1_GREEN_PIN, !gpio_get_level(LED1_GREEN_PIN));
-            // gpio_set_level(LED2_GREEN_PIN, !gpio_get_level(LED2_GREEN_PIN));
         }
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
@@ -397,17 +409,18 @@ static void motor_control_task(void *pvParameters)
             if (sbus_control || time_since_cmd > pdMS_TO_TICKS(1000)) {
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
-
-                // 注销LED指示 - 接收到SBUS命令时，两组LED的蓝色闪烁
-                // 注意：共阳极LED，取反操作需要考虑逻辑（1变0，0变1）
-                // gpio_set_level(LED1_BLUE_PIN, !gpio_get_level(LED1_BLUE_PIN));
-                // gpio_set_level(LED2_BLUE_PIN, !gpio_get_level(LED2_BLUE_PIN));
             }
         }
+#else
+        // CMD_VEL已禁用，直接处理SBUS数据
+        if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
+            parse_chan_val(sbus_data.channel);
+        }
+#endif
 
-        // 🔄 调整为50ms延迟，控制频率20Hz（原为100ms/10Hz）
-        // 提高控制频率一倍，提升响应速度
-        vTaskDelay(pdMS_TO_TICKS(50));
+        // 🔄 调整为100ms延迟，控制频率10Hz
+        // 降低频率减少CAN总线负载和日志输出
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -859,7 +872,8 @@ static void uart_init(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_DEBUG, 256, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_DEBUG, &uart_config));
 
-    // 配置CMD_VEL UART
+#if ENABLE_CMD_VEL
+    // 配置CMD_VEL UART (UART1)
     uart_config.baud_rate = 115200;
     ESP_ERROR_CHECK(uart_driver_install(UART_CMD, 256, 0, 20, &cmd_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_CMD, &uart_config));
@@ -879,6 +893,10 @@ static void uart_init(void)
     if (xReturned != pdPASS) {
         ESP_LOGE(TAG, "Failed to create CMD UART task");
     }
+    ESP_LOGI(TAG, "✅ CMD_VEL UART已初始化 (UART1, GPIO21)");
+#else
+    ESP_LOGI(TAG, "ℹ️ CMD_VEL已禁用，跳过UART1初始化");
+#endif
 }
 
 
@@ -1039,6 +1057,7 @@ void app_main(void)
         abort();  // 静态分配失败说明配置错误，应立即停止
     }
 
+#if ENABLE_CMD_VEL
     // 创建CMD_VEL队列（静态分配）
     cmd_queue = xQueueCreateStatic(
         20,
@@ -1052,25 +1071,31 @@ void app_main(void)
         ESP_LOGE(TAG, "❌ Failed to create CMD queue (static allocation)");
         abort();
     }
-
-    printf("✅ Queues created successfully (static allocation)\n");
+    printf("✅ Queues created successfully (SBUS + CMD_VEL)\n");
     printf("   SBUS queue: %u bytes (static)\n", (unsigned int)sizeof(sbus_queue_static_storage));
     printf("   CMD queue:  %u bytes (static)\n", (unsigned int)sizeof(cmd_queue_static_storage));
+#else
+    printf("✅ Queue created successfully (SBUS only, CMD_VEL disabled)\n");
+    printf("   SBUS queue: %u bytes (static)\n", (unsigned int)sizeof(sbus_queue_static_storage));
+#endif
     printf("💾 Free heap after static queues: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
     // 输出静态内存分配统计
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "📊 静态内存分配统计（优先级A优化）");
+    ESP_LOGI(TAG, "📊 静态内存分配统计");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "队列静态内存：");
     ESP_LOGI(TAG, "  ├─ SBUS队列存储:    %u bytes", (unsigned int)sizeof(sbus_queue_static_storage));
-    ESP_LOGI(TAG, "  ├─ SBUS队列控制块:  %u bytes", (unsigned int)sizeof(sbus_queue_static_buffer));
+    ESP_LOGI(TAG, "  └─ SBUS队列控制块:  %u bytes", (unsigned int)sizeof(sbus_queue_static_buffer));
+#if ENABLE_CMD_VEL
     ESP_LOGI(TAG, "  ├─ CMD队列存储:     %u bytes", (unsigned int)sizeof(cmd_queue_static_storage));
     ESP_LOGI(TAG, "  └─ CMD队列控制块:   %u bytes", (unsigned int)sizeof(cmd_queue_static_buffer));
-
     uint32_t total_static = sizeof(sbus_queue_static_storage) + sizeof(sbus_queue_static_buffer) +
                             sizeof(cmd_queue_static_storage) + sizeof(cmd_queue_static_buffer);
+#else
+    uint32_t total_static = sizeof(sbus_queue_static_storage) + sizeof(sbus_queue_static_buffer);
+#endif
 
     ESP_LOGI(TAG, "----------------------------------------");
     ESP_LOGI(TAG, "总静态内存使用:     %lu bytes (~%.1f KB)",
@@ -1095,7 +1120,9 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create SBUS task");
     }
 
+#if ENABLE_CMD_VEL
     // CMD_VEL处理任务已在UART初始化中创建
+#endif
 
     // 电机控制任务 - 中优先级
     xReturned = xTaskCreate(
@@ -1157,7 +1184,12 @@ void app_main(void)
 
 #if CORE_FUNCTION_MODE
     ESP_LOGI(TAG, "🎯 核心功能模式：关键FreeRTOS任务已创建");
+#if ENABLE_CMD_VEL
     ESP_LOGI(TAG, "✅ 已启用: SBUS处理、电机控制、CMD_VEL接收、状态监控");
+#else
+    ESP_LOGI(TAG, "✅ 已启用: SBUS处理、电机控制、状态监控");
+    ESP_LOGI(TAG, "ℹ️ CMD_VEL已禁用 (UART1空闲)");
+#endif
     ESP_LOGI(TAG, "🚫 已禁用: Wi-Fi管理、HTTP服务器、云客户端、数据集成");
 #else
     ESP_LOGI(TAG, "All FreeRTOS tasks created (including Wi-Fi and HTTP server)");

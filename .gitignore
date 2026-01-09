@@ -84,6 +84,10 @@ web_client/pnpm-debug.log*
 # Serena AI 工具配置
 .serena/
 
+# clangd 语言服务器索引文件
+*.idx
+.cache/
+
 # Visual Studio Code
 .vscode/settings.json
 .vscode/launch.json

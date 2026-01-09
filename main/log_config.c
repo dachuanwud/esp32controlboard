@@ -31,7 +31,7 @@ void configure_logging(void)
 
     // 控制模块优化日志级别
     esp_log_level_set("SBUS", ESP_LOG_DEBUG);       // 设置SBUS为DEBUG级别，便于实时调试
-    esp_log_level_set("DRV_KEYA", ESP_LOG_WARN);    // 降低CAN驱动日志级别
+    esp_log_level_set("DRV_KEYA", ESP_LOG_INFO);  // 启用CAN调试日志    // 降低CAN驱动日志级别
     esp_log_level_set("CHAN_PARSE", ESP_LOG_INFO);  // 保持通道解析日志级别
     esp_log_level_set("OTA", ESP_LOG_INFO);
     
@@ -89,7 +89,7 @@ void enable_sbus_debug_logging(void)
     esp_log_level_set("DATA_INTEGRATION", ESP_LOG_ERROR);
     esp_log_level_set("WIFI_MANAGER", ESP_LOG_WARN);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_WARN);
-    esp_log_level_set("DRV_KEYA", ESP_LOG_WARN);
+    esp_log_level_set("DRV_KEYA", ESP_LOG_INFO);  // 启用CAN调试日志
 
     // 减少系统噪音
     esp_log_level_set("wifi", ESP_LOG_ERROR);

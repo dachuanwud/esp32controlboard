@@ -34,6 +34,11 @@
 #define ENABLE_SBUS_DEBUG       1   // 启用SBUS实时调试打印
 #define ENABLE_SBUS_RAW_DATA    1   // 启用SBUS原始数据打印
 #define ENABLE_SBUS_FRAME_INFO  1   // 启用SBUS帧信息打印
+#define ENABLE_CAN_DEBUG        1   // 启用CAN发送/状态调试打印
+#define ENABLE_CMD_VEL          0   // 禁用CMD_VEL UART接收与任务
+
+// CMD_VEL功能开关 - 设置为0禁用UART1 CMD_VEL接收
+#define ENABLE_CMD_VEL          0   // 禁用CMD_VEL功能（节省UART1资源）
 
 // 功能模块开关（当CORE_FUNCTION_MODE=1时，以下功能将被禁用）
 #if CORE_FUNCTION_MODE

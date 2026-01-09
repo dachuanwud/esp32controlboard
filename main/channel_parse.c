@@ -4,6 +4,8 @@
 #include "channel_parse.h"
 #include "drv_keyadouble.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <inttypes.h>
 
 static const char *TAG = "CHAN_PARSE";
@@ -15,6 +17,7 @@ static uint8_t (*intf_move)(int8_t, int8_t) = intf_move_keyadouble;
 // 初始化为0，表示未接收到有效数据
 static uint16_t last_ch_val[16] = {0};
 static bool first_run = true;
+#define CLAIM_WINDOW_MS 500
 
 /**
  * 将通道值转换为速度值
@@ -104,6 +107,8 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         static bool last_remote_enabled = false;
         static bool last_single_hand_mode = false;
         static bool last_low_speed_mode = false;
+        static bool claim_window_active = false;
+        static uint32_t claim_start_tick = 0;
         
         // CH4 遥控使能开关：1050=使能，1500/1950=禁用
         // 使用范围判断（<=1100）而非严格相等，容忍SBUS信号波动（±50）
@@ -114,8 +119,15 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         bool current_low_speed = (ch_val[7] == 1950);
 
         if (current_remote_enabled != last_remote_enabled) {
-            ESP_LOGI(TAG, "🔒 Remote control: %s (CH4=%d)", 
-                     current_remote_enabled ? "ENABLED" : "DISABLED", ch_val[4]);
+            if (current_remote_enabled) {
+                claim_window_active = true;
+                claim_start_tick = xTaskGetTickCount();
+                ESP_LOGI(TAG, "🔒 Remote control: ENABLED (CH4=%d) - claim window %dms",
+                         ch_val[4], CLAIM_WINDOW_MS);
+            } else {
+                claim_window_active = false;
+                ESP_LOGI(TAG, "🔒 Remote control: DISABLED (CH4=%d)", ch_val[4]);
+            }
             last_remote_enabled = current_remote_enabled;
         }
 
@@ -228,6 +240,19 @@ uint8_t parse_chan_val(uint16_t* ch_val)
                     ESP_LOGI(TAG, "↖️ DIFFERENTIAL LEFT - Left:%d Right:%d", left_speed, right_speed);
                 }
             }
+        }
+
+        if (claim_window_active) {
+            uint32_t elapsed_ticks = xTaskGetTickCount() - claim_start_tick;
+            if (elapsed_ticks < pdMS_TO_TICKS(CLAIM_WINDOW_MS)) {
+                drv_keyadouble_send_heartbeat(left_speed, right_speed);
+                last_left_speed = left_speed;
+                last_right_speed = right_speed;
+                update_last_channels(ch_val);
+                return 0;
+            }
+            claim_window_active = false;
+            ESP_LOGI(TAG, "Claim window ended, CAN control enabled");
         }
 
         // 执行电机控制并发送CAN消息（包括速度为0的停止命令）

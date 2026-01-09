@@ -24,4 +24,11 @@ esp_err_t drv_keyadouble_init(void);
  */
 void drv_keyadouble_print_diag(void);
 
+/**
+ * 发送控制器心跳帧（不发送电机控制命令）
+ * @param speed_left 左电机速度(-100到100)
+ * @param speed_right 右电机速度(-100到100)
+ */
+void drv_keyadouble_send_heartbeat(int8_t speed_left, int8_t speed_right);
+
 #endif /* DRV_KEYADOUBLE_H */

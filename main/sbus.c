@@ -28,6 +28,9 @@ static void sbus_uart_task(void *pvParameters)
     // 记录最后一次成功接收完整SBUS帧的时间（用于超时检测）
     static TickType_t last_frame_time = 0;
     static bool first_frame_received = false;
+    // 错误统计（用于诊断）
+    static uint32_t header_error_count = 0;
+    static uint32_t footer_error_count = 0;
 
     ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO22...");
     ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
@@ -115,6 +118,7 @@ static void sbus_uart_task(void *pvParameters)
 #if ENABLE_SBUS_FRAME_INFO
                                     ESP_LOGD(TAG, "❌ 帧头错误: 0x%02X (期望: 0x0F)", data);
 #endif
+                                    header_error_count++;
                                     g_sbus_pt--; // 回退，重新等待
                                 } else {
 #if ENABLE_SBUS_FRAME_INFO
@@ -122,7 +126,7 @@ static void sbus_uart_task(void *pvParameters)
 #endif
                                 }
                             } else if (g_sbus_pt == 25) {
-                                // 判断帧尾
+                                // 判断帧尾 - 标准SBUS帧尾应为0x00
                                 if (data == 0x00) {
 #if ENABLE_SBUS_FRAME_INFO
                                     ESP_LOGD(TAG, "✅ 检测到SBUS帧尾: 0x%02X，完整帧接收完成", data);
@@ -142,6 +146,7 @@ static void sbus_uart_task(void *pvParameters)
 #if ENABLE_SBUS_FRAME_INFO
                                     ESP_LOGW(TAG, "❌ 帧尾错误: 0x%02X (期望: 0x00)，丢弃帧", data);
 #endif
+                                    footer_error_count++;
                                     g_sbus_pt = 0; // 数据错误，重新等待
                                 }
                             }
@@ -162,11 +167,34 @@ static void sbus_uart_task(void *pvParameters)
                 // 如果超过100ms（约7倍正常间隔）没有收到完整帧，则警告
                 if (time_since_last_frame > pdMS_TO_TICKS(100)) {
                     static TickType_t last_warning_time = 0;
+                    static uint32_t frame_timeout_count = 0;  // 帧超时计数
+                    
                     // 每5秒只警告一次，避免日志刷屏
                     if (current_time - last_warning_time > pdMS_TO_TICKS(5000)) {
-                        ESP_LOGW(TAG, "⚠️ No SBUS frame received for %lu ms - check connections", 
-                                (unsigned long)(time_since_last_frame * portTICK_PERIOD_MS));
+                        // 检查UART缓冲区状态，判断是信号丢失还是数据错误
+                        size_t uart_buf_len = 0;
+                        uart_get_buffered_data_len(UART_SBUS, &uart_buf_len);
+                        
+                        if (uart_buf_len == 0) {
+                            // 缓冲区空 - 可能是硬件信号丢失
+                            ESP_LOGW(TAG, "⚠️ No SBUS frame for %lu ms - 信号可能丢失 (UART缓冲区空)", 
+                                    (unsigned long)(time_since_last_frame * portTICK_PERIOD_MS));
+                            ESP_LOGW(TAG, "📡 检查: 1)接收机电源 2)遥控器开启 3)GPIO22连接");
+                        } else {
+                            // 缓冲区有数据但无有效帧 - 可能是数据错误
+                            ESP_LOGW(TAG, "⚠️ No SBUS frame for %lu ms - 帧解析失败 (缓冲区%u字节)", 
+                                    (unsigned long)(time_since_last_frame * portTICK_PERIOD_MS),
+                                    (unsigned int)uart_buf_len);
+                            ESP_LOGW(TAG, "📊 当前解析状态: pt=%d, 累计错误: 帧头%lu/帧尾%lu",
+                                    g_sbus_pt & 0x7F, 
+                                    (unsigned long)header_error_count,
+                                    (unsigned long)footer_error_count);
+                        }
                         last_warning_time = current_time;
+                        
+                        // 记录错误统计（用于调试）
+                        frame_timeout_count++;
+                        (void)frame_timeout_count;  // 避免未使用警告
                     }
                 }
             }
