@@ -12,6 +12,14 @@
 #include <inttypes.h>
 #include "esp_app_desc.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
+#include "esp_system.h"  // for esp_reset_reason()
+
+// ============================================================================
+// 任务看门狗配置
+// ============================================================================
+#define TASK_WDT_TIMEOUT_S      30      // 看门狗超时时间（秒）
+#define TASK_WDT_PANIC_ENABLE   true    // 超时时触发panic重启
 
 static const char *TAG = "MAIN";
 
@@ -263,17 +271,38 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
  * SBUS数据处理任务
  * 接收SBUS数据并通过队列发送给控制任务
  * 持续轮询等待SBUS数据，确保实时响应
+ * 🐕 已添加任务看门狗监控
  */
 static void sbus_process_task(void *pvParameters)
 {
     uint8_t sbus_raw_data[LEN_SBUS] = {0};
     uint16_t ch_val[LEN_CHANEL] = {0};
     sbus_data_t sbus_data;
+    uint32_t wdt_feed_counter = 0;  // 喂狗计数器
 
     ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
 
+    // 🐕 订阅任务看门狗监控
+    esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+    if (wdt_ret == ESP_OK) {
+        ESP_LOGI(TAG, "🐕 SBUS处理任务已加入看门狗监控");
+    } else {
+        ESP_LOGW(TAG, "⚠️ SBUS处理任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
+    }
+
     while (1) {
+        // 🐕 每50次循环喂狗一次（约10秒，因为每次等待200ms）
+        wdt_feed_counter++;
+        if (wdt_feed_counter >= 50) {
+            esp_task_wdt_reset();
+            wdt_feed_counter = 0;
+        }
+
         if (sbus_wait_data_ready(pdMS_TO_TICKS(200)) == pdTRUE) {
+            // 🐕 收到数据时立即喂狗
+            esp_task_wdt_reset();
+            wdt_feed_counter = 0;
+
             // 检查SBUS数据
             if (!sbus_get_data(sbus_raw_data)) {
                 continue;
@@ -375,6 +404,7 @@ static void cmd_uart_task(void *pvParameters)
 /**
  * 电机控制任务
  * 接收来自SBUS（和CMD_VEL，如果启用）的命令，控制电机
+ * 🐕 已添加任务看门狗监控
  */
 static void motor_control_task(void *pvParameters)
 {
@@ -387,7 +417,18 @@ static void motor_control_task(void *pvParameters)
 
     ESP_LOGI(TAG, "电机控制任务已启动");
 
+    // 🐕 订阅任务看门狗监控
+    esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+    if (wdt_ret == ESP_OK) {
+        ESP_LOGI(TAG, "🐕 电机控制任务已加入看门狗监控");
+    } else {
+        ESP_LOGW(TAG, "⚠️ 电机控制任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
+    }
+
     while (1) {
+        // 🐕 喂狗 - 表示任务正常运行
+        esp_task_wdt_reset();
+
 #if ENABLE_CMD_VEL
         // 检查是否有CMD_VEL命令
         if (xQueueReceive(cmd_queue, &motor_cmd, 0) == pdPASS) {
@@ -729,19 +770,36 @@ static void http_server_task(void *pvParameters)
 /**
  * 状态监控任务
  * 监控系统状态并控制LED红灯闪烁指示系统运行状态
+ * 🐕 已添加任务看门狗监控
  */
 static void status_monitor_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "状态监控任务已启动 (LED红灯闪烁已启用)");
 
+    // 🐕 订阅任务看门狗监控
+    esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+    if (wdt_ret == ESP_OK) {
+        ESP_LOGI(TAG, "🐕 状态监控任务已加入看门狗监控");
+    } else {
+        ESP_LOGW(TAG, "⚠️ 状态监控任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
+    }
+
     // LED红灯闪烁控制变量
     static bool red_led_state = false;  // false=熄灭, true=点亮
     static uint32_t led_tick_count = 0;
+    static uint32_t wdt_feed_counter = 0;  // 🐕 喂狗计数器
     const uint32_t LED_BLINK_MS = 250;  // 闪烁间隔250ms (2Hz频率: 亮250ms/灭250ms)
     const uint32_t TASK_DELAY_MS = 50;  // 任务延迟50ms，提高LED闪烁平滑度和精确度
     const uint32_t LED_TOGGLE_INTERVAL = LED_BLINK_MS / TASK_DELAY_MS;  // 每5次循环切换一次(250ms)
+    const uint32_t WDT_FEED_INTERVAL = 100;  // 🐕 每100次循环喂狗一次（约5秒）
 
     while (1) {
+        // 🐕 定期喂狗 - 每5秒喂狗一次
+        wdt_feed_counter++;
+        if (wdt_feed_counter >= WDT_FEED_INTERVAL) {
+            esp_task_wdt_reset();
+            wdt_feed_counter = 0;
+        }
         // LED红灯闪烁控制 - 低优先级任务，不影响核心功能
         // 注意：共阳极LED，低电平(0)点亮，高电平(1)熄灭
         led_tick_count++;
@@ -820,6 +878,27 @@ static void led_power_on_blink(void)
  */
 static void gpio_init(void)
 {
+    // ====================================================================
+    // 🛡️ GPIO0 启动模式引脚保护说明
+    // ====================================================================
+    // GPIO0 是 ESP32 的 Strapping Pin (启动模式选择引脚)
+    // 上电/复位时：
+    //   - GPIO0 = HIGH (浮空或上拉) → 从 Flash 正常启动
+    //   - GPIO0 = LOW (拉低)        → 进入下载模式 (串口烧录模式)
+    //
+    // 重启后无法正常启动的常见原因：
+    // 1. GPIO0 外部被拉低 (按键按下、外部电路干扰)
+    // 2. 电源不稳定导致 GPIO0 状态不确定
+    // 3. 串口工具的 DTR/RTS 信号控制了 GPIO0
+    //
+    // 解决方案：
+    // 1. 在 GPIO0 和 3.3V 之间添加外部 10KΩ 上拉电阻 (强烈建议)
+    // 2. 不使用 GPIO0 作为按键输入 (本代码已禁用 GPIO0 按键功能)
+    // 3. 确保电源供电稳定 (5V 2A 以上电源)
+    // ====================================================================
+    
+    ESP_LOGI(TAG, "🔧 初始化GPIO...");
+    
     // 配置LED引脚 - 两组共阳极RGB LED
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -830,13 +909,31 @@ static void gpio_init(void)
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
 
-    // 配置按键引脚
-    io_conf.intr_type = GPIO_INTR_POSEDGE;  // 上升沿触发中断
+    // 配置按键引脚 - 只配置KEY2
+    io_conf.intr_type = GPIO_INTR_DISABLE;  // 🔧 改为禁用中断，避免潜在干扰
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << KEY1_PIN) | (1ULL << KEY2_PIN);
+    io_conf.pin_bit_mask = (1ULL << KEY2_PIN);  // 只配置KEY2，跳过GPIO0
     io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 1;  // 启用内部上拉电阻
+    io_conf.pull_up_en = 1;
     gpio_config(&io_conf);
+    
+    // ====================================================================
+    // 🛡️ GPIO0 处理策略 - 为确保重启可靠性，不对 GPIO0 做任何配置
+    // ====================================================================
+    // 以前的代码会配置 GPIO0 为输入+内部上拉，但这可能导致问题：
+    // - 内部上拉电阻约 45KΩ，驱动能力较弱
+    // - 如果有外部干扰，可能被拉低导致进入下载模式
+    // 
+    // 现在的策略：
+    // - 不对 GPIO0 做任何软件配置，保持其默认状态
+    // - 依赖外部硬件上拉电阻确保启动可靠性
+    // - 如果必须使用 GPIO0 作为按键，请确保：
+    //   1. 外部添加 10KΩ 上拉电阻到 3.3V
+    //   2. 按键通过 1KΩ 电阻连接到 GND (限流保护)
+    // ====================================================================
+    
+    ESP_LOGI(TAG, "⚠️ GPIO0 (启动模式引脚) 未配置，以确保重启可靠性");
+    ESP_LOGI(TAG, "   如需使用KEY1按键，请添加外部10KΩ上拉电阻");
 
     // 设置LED初始状态 - 共阳极LED，高电平(1)熄灭，低电平(0)点亮
     // LED1组初始状态 - 全部熄灭
@@ -900,6 +997,27 @@ static void uart_init(void)
 }
 
 
+/**
+ * 获取复位原因的字符串描述
+ */
+static const char* get_reset_reason_str(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_UNKNOWN:   return "Unknown";
+        case ESP_RST_POWERON:   return "Power-on";
+        case ESP_RST_EXT:       return "External pin";
+        case ESP_RST_SW:        return "Software reset (esp_restart)";
+        case ESP_RST_PANIC:     return "Exception/panic";
+        case ESP_RST_INT_WDT:   return "Interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "Task watchdog";
+        case ESP_RST_WDT:       return "Other watchdog";
+        case ESP_RST_DEEPSLEEP: return "Deep sleep";
+        case ESP_RST_BROWNOUT:  return "Brownout (电源欠压)";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "Invalid";
+    }
+}
+
 void app_main(void)
 {
     // ====================================================================
@@ -908,6 +1026,53 @@ void app_main(void)
 
     printf("\n=== ESP32 Control Board Starting ===\n");
     printf("Free heap at start: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+
+    // ====================================================================
+    // 🔍 重启原因诊断 - 帮助定位重启问题
+    // ====================================================================
+    esp_reset_reason_t reset_reason = esp_reset_reason();
+    printf("\n");
+    printf("========================================\n");
+    printf("🔍 重启原因诊断\n");
+    printf("========================================\n");
+    printf("   复位原因代码: %d\n", (int)reset_reason);
+    printf("   复位原因描述: %s\n", get_reset_reason_str(reset_reason));
+    
+    // 特殊原因警告
+    if (reset_reason == ESP_RST_BROWNOUT) {
+        printf("   ⚠️ 警告: 检测到电源欠压复位!\n");
+        printf("   ⚠️ 可能原因: 电源供电不足、CAN总线负载过大、外设复位导致电流尖峰\n");
+        printf("   ⚠️ 建议: 检查电源容量，确保稳定的5V/3.3V供电\n");
+    } else if (reset_reason == ESP_RST_PANIC) {
+        printf("   ⚠️ 警告: 检测到异常/panic复位!\n");
+        printf("   ⚠️ 可能原因: 代码异常、栈溢出、非法内存访问\n");
+    } else if (reset_reason == ESP_RST_TASK_WDT) {
+        printf("   ⚠️ 警告: 检测到任务看门狗超时复位!\n");
+        printf("   ⚠️ 可能原因: 某个任务长时间阻塞，无法喂狗\n");
+    } else if (reset_reason == ESP_RST_INT_WDT) {
+        printf("   ⚠️ 警告: 检测到中断看门狗超时复位!\n");
+        printf("   ⚠️ 可能原因: 中断处理时间过长或死锁\n");
+    }
+    printf("========================================\n\n");
+
+    // ====================================================================
+    // 任务看门狗初始化 - 防止系统假死
+    // ====================================================================
+    printf("Initializing Task Watchdog...\n");
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = TASK_WDT_TIMEOUT_S * 1000,
+        .idle_core_mask = (1 << 0) | (1 << 1),  // 监控两个核心的空闲任务
+        .trigger_panic = TASK_WDT_PANIC_ENABLE   // 超时时触发panic重启
+    };
+    esp_err_t wdt_ret = esp_task_wdt_init(&wdt_config);
+    if (wdt_ret == ESP_OK) {
+        printf("✅ Task Watchdog initialized (timeout: %ds, panic: %s)\n", 
+               TASK_WDT_TIMEOUT_S, TASK_WDT_PANIC_ENABLE ? "enabled" : "disabled");
+    } else if (wdt_ret == ESP_ERR_INVALID_STATE) {
+        printf("⚠️ Task Watchdog already initialized\n");
+    } else {
+        printf("❌ Task Watchdog init failed: %s\n", esp_err_to_name(wdt_ret));
+    }
 
     // 初始化全局变量（必须在其他初始化之前）
     printf("Initializing global variables...\n");

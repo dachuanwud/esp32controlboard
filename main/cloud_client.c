@@ -1,4 +1,5 @@
 #include "cloud_client.h"
+#include "main.h"
 #include "data_integration.h"
 #include "wifi_manager.h"
 #include "esp_log.h"
@@ -714,6 +715,12 @@ static esp_err_t handle_ota_command(const cJSON* data)
 {
     ESP_LOGI(TAG, "🚀 开始处理OTA升级指令");
 
+#if !ENABLE_CLOUD_OTA
+    (void)data;
+    ESP_LOGW(TAG, "⚠️ 云端OTA已禁用，拒绝执行指令");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+
     if (!data) {
         ESP_LOGE(TAG, "❌ OTA指令数据为空");
         return ESP_ERR_INVALID_ARG;
@@ -1001,6 +1008,11 @@ int cloud_client_get_commands(cloud_command_t* commands, int max_commands)
 
             // 立即处理OTA指令
             if (commands[count].command == CLOUD_CMD_OTA_UPDATE) {
+#if !ENABLE_CLOUD_OTA
+                ESP_LOGW(TAG, "⚠️ 云端OTA已禁用，忽略升级指令");
+                cloud_client_send_command_feedback(s_current_command_id, "failed", "Cloud OTA disabled");
+                continue;
+#endif
                 ESP_LOGI(TAG, "🚀 收到OTA升级指令，立即处理");
                 ESP_LOGI(TAG, "📋 指令ID: %s", s_current_command_id);
 

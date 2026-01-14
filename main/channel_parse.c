@@ -186,7 +186,7 @@ uint8_t parse_chan_val(uint16_t* ch_val)
 
         // ⚡ 性能优化：增大速度变化阈值，减少不必要的日志输出
         // 从5增加到15，只在显著变化时才打印日志
-        #define SPEED_LOG_THRESHOLD 15
+        #define SPEED_LOG_THRESHOLD 25  // 速度变化超过25才打印日志
 
         if (sp_fb == 0) {
             if (sp_lr == 0) {
@@ -242,17 +242,11 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             }
         }
 
+        // 🔧 简化：移除 claim window 延迟，立即发送 CAN 控制信号
+        // 原设计用于多控制器仲裁，单控制器场景下可直接跳过
         if (claim_window_active) {
-            uint32_t elapsed_ticks = xTaskGetTickCount() - claim_start_tick;
-            if (elapsed_ticks < pdMS_TO_TICKS(CLAIM_WINDOW_MS)) {
-                drv_keyadouble_send_heartbeat(left_speed, right_speed);
-                last_left_speed = left_speed;
-                last_right_speed = right_speed;
-                update_last_channels(ch_val);
-                return 0;
-            }
             claim_window_active = false;
-            ESP_LOGI(TAG, "Claim window ended, CAN control enabled");
+            ESP_LOGI(TAG, "✅ Claim window skipped, CAN control enabled immediately");
         }
 
         // 执行电机控制并发送CAN消息（包括速度为0的停止命令）

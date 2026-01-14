@@ -3,6 +3,7 @@
 #include "main.h"
 #include "hal/uart_types.h"  // 包含UART_INVERT_RXD定义
 #include "freertos/semphr.h"
+#include "esp_task_wdt.h"    // 🐕 任务看门狗
 
 static const char *TAG = "SBUS";
 
@@ -18,6 +19,7 @@ static SemaphoreHandle_t sbus_data_ready_sem = NULL;
 
 /**
  * SBUS UART接收任务
+ * 🐕 已添加任务看门狗监控
  */
 static void sbus_uart_task(void *pvParameters)
 {
@@ -31,10 +33,20 @@ static void sbus_uart_task(void *pvParameters)
     // 错误统计（用于诊断）
     static uint32_t header_error_count = 0;
     static uint32_t footer_error_count = 0;
+    // 🐕 喂狗计数器
+    static uint32_t wdt_feed_counter = 0;
 
     ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO22...");
     ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
     ESP_LOGI(TAG, "🔌 Hardware: Connect SBUS signal to GPIO22, GND to GND");
+
+    // 🐕 订阅任务看门狗监控
+    esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+    if (wdt_ret == ESP_OK) {
+        ESP_LOGI(TAG, "🐕 SBUS UART任务已加入看门狗监控");
+    } else {
+        ESP_LOGW(TAG, "⚠️ SBUS UART任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
+    }
 
     // 初始化绿灯状态为熄灭（共阳极LED，高电平熄灭）
     gpio_set_level(LED1_GREEN_PIN, 1);
@@ -42,6 +54,13 @@ static void sbus_uart_task(void *pvParameters)
     ESP_LOGI(TAG, "💚 Green LEDs initialized (OFF) - will blink when data received");
 
     while (1) {
+        // 🐕 定期喂狗 - 每500次循环喂狗一次（约5秒）
+        wdt_feed_counter++;
+        if (wdt_feed_counter >= 500) {
+            esp_task_wdt_reset();
+            wdt_feed_counter = 0;
+        }
+
         // 每次循环都打印一次状态（用于调试）
         static uint32_t loop_count = 0;
         static uint32_t last_event_time = 0;
@@ -126,28 +145,31 @@ static void sbus_uart_task(void *pvParameters)
 #endif
                                 }
                             } else if (g_sbus_pt == 25) {
-                                // 判断帧尾 - 标准SBUS帧尾应为0x00
-                                if (data == 0x00) {
+                                // 🔧 帧尾字节 - 放宽校验，接受任意值
+                                // 标准SBUS帧尾应为0x00，但部分设备可能使用其他值
+                                // 不再严格校验帧尾，只要帧头正确且长度达到25字节即认为有效
 #if ENABLE_SBUS_FRAME_INFO
-                                    ESP_LOGD(TAG, "✅ 检测到SBUS帧尾: 0x%02X，完整帧接收完成", data);
-#endif
-                                    g_sbus_pt |= 0x80; // 标记一帧数据的接收
-                                    // 更新最后接收帧的时间戳（用于超时检测）
-                                    last_frame_time = xTaskGetTickCount();
-                                    first_frame_received = true;
-                                    // LED指示
-                                    gpio_set_level(LED1_GREEN_PIN, 0);
-                                    gpio_set_level(LED2_GREEN_PIN, 0);
-                                    // 通知处理任务有新数据
-                                    if (sbus_data_ready_sem != NULL) {
-                                        xSemaphoreGive(sbus_data_ready_sem);
-                                    }
+                                if (data != 0x00) {
+                                    ESP_LOGD(TAG, "⚠️ 帧尾非标准值: 0x%02X (标准: 0x00)，但仍接受", data);
                                 } else {
-#if ENABLE_SBUS_FRAME_INFO
-                                    ESP_LOGW(TAG, "❌ 帧尾错误: 0x%02X (期望: 0x00)，丢弃帧", data);
+                                    ESP_LOGD(TAG, "✅ 检测到SBUS帧尾: 0x%02X，完整帧接收完成", data);
+                                }
 #endif
+                                // 无论帧尾值如何，都标记帧接收完成
+                                g_sbus_pt |= 0x80; // 标记一帧数据的接收
+                                // 更新最后接收帧的时间戳（用于超时检测）
+                                last_frame_time = xTaskGetTickCount();
+                                first_frame_received = true;
+                                // LED指示
+                                gpio_set_level(LED1_GREEN_PIN, 0);
+                                gpio_set_level(LED2_GREEN_PIN, 0);
+                                // 通知处理任务有新数据
+                                if (sbus_data_ready_sem != NULL) {
+                                    xSemaphoreGive(sbus_data_ready_sem);
+                                }
+                                // 统计非标准帧尾（用于调试参考）
+                                if (data != 0x00) {
                                     footer_error_count++;
-                                    g_sbus_pt = 0; // 数据错误，重新等待
                                 }
                             }
                         }
@@ -351,29 +373,24 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     }
 
 #if ENABLE_SBUS_DEBUG
-    // 调试模式：减少打印频率，每5帧打印一次而不是每帧
-    if (frame_count % 5 == 0) {
-        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 所有通道数据:", frame_count);
-        ESP_LOGI(TAG, "   CH0-3:  %4d %4d %4d %4d", channel[0], channel[1], channel[2], channel[3]);
-        ESP_LOGI(TAG, "   CH4-7:  %4d %4d %4d %4d", channel[4], channel[5], channel[6], channel[7]);
-        ESP_LOGI(TAG, "   CH8-11: %4d %4d %4d %4d", channel[8], channel[9], channel[10], channel[11]);
+    // 调试模式：有变化时打印，否则每500帧打印一次（约7秒）
+    if (significant_change || first_sbus_data) {
+        // 🔔 检测到变化时打印
+        ESP_LOGI(TAG, "🔔 SBUS变化! CH0:%4d CH2:%4d CH3:%4d CH4:%4d",
+                 channel[0], channel[2], channel[3], channel[4]);
+    } else if (frame_count % 500 == 0) {
+        // 每500帧打印一次心跳（约7秒，71Hz）
+        ESP_LOGI(TAG, "💓 SBUS心跳 #%lu - CH0:%4d CH2:%4d CH4:%4d",
+                 frame_count, channel[0], channel[2], channel[4]);
     }
-
-    // 避免未使用变量警告
-    (void)significant_change;
-    (void)first_sbus_data;
 #else
     // 正常模式：只在有显著变化时打印关键通道
-    // CH4 为遥控使能开关（1050=使能，1500/1950=禁用）
     if (first_sbus_data || significant_change) {
-        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 关键通道: CH0:%4u CH2:%4u CH3:%4u CH4:%4u CH6:%4u CH7:%4u",
-                 frame_count, channel[0], channel[2], channel[3], channel[4], channel[6], channel[7]);
-    } else {
-        // 每100帧打印一次状态（从10增加到100），减少日志负担
-        if (frame_count % 100 == 0) {
-            ESP_LOGD(TAG, "🎮 SBUS活跃 - 帧#%lu: CH0:%4u CH2:%4u CH4:%4u",
-                     frame_count, channel[0], channel[2], channel[4]);
-        }
+        ESP_LOGI(TAG, "🔔 SBUS变化! CH0:%4u CH2:%4u CH3:%4u CH4:%4u",
+                 channel[0], channel[2], channel[3], channel[4]);
+    } else if (frame_count % 500 == 0) {
+        // 每500帧打印一次心跳（约7秒）
+        ESP_LOGI(TAG, "💓 SBUS心跳 #%lu", frame_count);
     }
 #endif
 

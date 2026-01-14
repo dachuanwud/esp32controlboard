@@ -32,8 +32,8 @@
 
 // 调试功能开关
 #define ENABLE_SBUS_DEBUG       1   // 启用SBUS实时调试打印
-#define ENABLE_SBUS_RAW_DATA    1   // 启用SBUS原始数据打印
-#define ENABLE_SBUS_FRAME_INFO  1   // 启用SBUS帧信息打印
+#define ENABLE_SBUS_RAW_DATA    0   // 启用SBUS原始数据打印
+#define ENABLE_SBUS_FRAME_INFO  0   // 启用SBUS帧信息打印
 #define ENABLE_CAN_DEBUG        1   // 启用CAN发送/状态调试打印
 #define ENABLE_CMD_VEL          0   // 禁用CMD_VEL UART接收与任务
 
@@ -55,6 +55,10 @@
     #define ENABLE_WIFI             1   // 启用Wi-Fi连接
 #endif
 
+// OTA功能开关（需要临时禁用时设为0）
+#define ENABLE_CLOUD_OTA       0   // 云端OTA
+#define ENABLE_HTTP_OTA        0   // HTTP OTA
+
 // 定义GPIO引脚
 // LED指示灯引脚 - 共阳极RGB LED
 // LED1组
@@ -68,7 +72,10 @@
 #define LED2_BLUE_PIN           GPIO_NUM_27  // LED2蓝色引脚
 
 // 按键引脚
-#define KEY1_PIN                GPIO_NUM_0   // 按键1
+// ⚠️ 注意：GPIO0 是启动模式选择引脚，上电时必须为高电平才能正常启动
+// 如果GPIO0在上电时被拉低，ESP32会进入下载模式而不是正常启动
+// 建议：如果不需要按键功能，可以不使用GPIO0；如果需要，确保外部电路有上拉电阻
+#define KEY1_PIN                GPIO_NUM_0   // 按键1 (⚠️ 启动模式引脚，需外部上拉)
 #define KEY2_PIN                GPIO_NUM_35  // 按键2
 
 // 电机控制引脚 (通过CAN总线控制，不需要直接GPIO控制)

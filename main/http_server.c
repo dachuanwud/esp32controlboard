@@ -44,6 +44,8 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json, int status_co
         httpd_resp_set_status(req, "200 OK");
     } else if (status_code == 400) {
         httpd_resp_set_status(req, "400 Bad Request");
+    } else if (status_code == 403) {
+        httpd_resp_set_status(req, "403 Forbidden");
     } else if (status_code == 500) {
         httpd_resp_set_status(req, "500 Internal Server Error");
     } else {
@@ -54,6 +56,22 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json, int status_co
     esp_err_t ret = httpd_resp_send(req, json_string, strlen(json_string));
 
     free(json_string);
+    return ret;
+}
+
+static esp_err_t send_ota_disabled_response(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "⚠️ OTA endpoint disabled");
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    cJSON_AddStringToObject(json, "status", "error");
+    cJSON_AddStringToObject(json, "message", "OTA disabled");
+    esp_err_t ret = send_json_response(req, json, 403);
+    cJSON_Delete(json);
     return ret;
 }
 
@@ -220,6 +238,9 @@ static esp_err_t device_health_handler(httpd_req_t *req)
  */
 static esp_err_t ota_upload_handler(httpd_req_t *req)
 {
+#if !ENABLE_HTTP_OTA
+    return send_ota_disabled_response(req);
+#endif
     ESP_LOGI(TAG, "📦 OTA upload started, content length: %d", req->content_len);
 
     if (req->content_len <= 0) {
@@ -309,6 +330,9 @@ static esp_err_t ota_upload_handler(httpd_req_t *req)
  */
 static esp_err_t ota_progress_handler(httpd_req_t *req)
 {
+#if !ENABLE_HTTP_OTA
+    return send_ota_disabled_response(req);
+#endif
     ota_progress_t progress;
     if (http_server_get_ota_progress(&progress) != ESP_OK) {
         httpd_resp_send_500(req);
@@ -341,6 +365,9 @@ static esp_err_t ota_progress_handler(httpd_req_t *req)
  */
 static esp_err_t ota_start_handler(httpd_req_t *req)
 {
+#if !ENABLE_HTTP_OTA
+    return send_ota_disabled_response(req);
+#endif
     ESP_LOGI(TAG, "🚀 OTA start request received");
 
     // 解析请求体
@@ -410,6 +437,9 @@ static esp_err_t ota_start_handler(httpd_req_t *req)
  */
 static esp_err_t ota_rollback_handler(httpd_req_t *req)
 {
+#if !ENABLE_HTTP_OTA
+    return send_ota_disabled_response(req);
+#endif
     ESP_LOGI(TAG, "🔄 OTA rollback request received");
 
     // 执行回滚操作
@@ -438,6 +468,9 @@ static esp_err_t ota_rollback_handler(httpd_req_t *req)
  */
 static esp_err_t ota_info_handler(httpd_req_t *req)
 {
+#if !ENABLE_HTTP_OTA
+    return send_ota_disabled_response(req);
+#endif
     ESP_LOGI(TAG, "📋 OTA info request received");
 
     cJSON *json = cJSON_CreateObject();
@@ -930,6 +963,10 @@ esp_err_t http_server_get_ota_progress(ota_progress_t* progress)
     if (progress == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+
+#if !ENABLE_HTTP_OTA
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 
     return ota_manager_get_progress(progress);
 }

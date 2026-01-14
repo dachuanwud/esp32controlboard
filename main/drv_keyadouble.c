@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_private/periph_ctrl.h"  // 用于外设复位
+#include "esp_task_wdt.h"             // 🐕 任务看门狗
 
 static const char *TAG = "DRV_KEYA";
 
@@ -36,8 +37,8 @@ uint8_t bk_flag_right = 0;
 // 控制器心跳序列号
 static uint16_t heartbeat_seq = 0;
 
-// CAN接收任务句柄
-static TaskHandle_t can_rx_task_handle = NULL;
+// CAN task handle (TX/RX/recovery in one task)
+static TaskHandle_t can_task_handle = NULL;
 
 // CAN总线恢复计数器
 static uint32_t can_recovery_count = 0;
@@ -57,6 +58,13 @@ static uint32_t recovery_pause_until = 0;  // 暂停恢复直到此时间
 #define CAN_MAX_RECOVERY_FAILURES 5       // 连续5次恢复失败后暂停
 #define CAN_RECOVERY_PAUSE_MS 30000       // 暂停30秒
 
+// 🔧 新增：硬复位保护计数器（防止频繁硬复位导致系统不稳定）
+static uint32_t hw_reset_count = 0;          // 硬复位计数
+static uint32_t last_hw_reset_time = 0;      // 上次硬复位时间
+#define CAN_HW_RESET_MAX_COUNT 3             // 短时间内最多允许3次硬复位
+#define CAN_HW_RESET_WINDOW_MS 60000         // 计数窗口60秒
+#define CAN_HW_RESET_COOLDOWN_MS 120000      // 硬复位过多后冷却2分钟
+
 // 注意：已移除motor_enabled标志，改为每次发送速度命令时都发送使能命令
 // 这样可以避免看门狗超时导致的驱动器失能问题
 
@@ -66,15 +74,128 @@ static uint32_t recovery_pause_until = 0;  // 暂停恢复直到此时间
 // 注意：配置结构体在初始化函数中创建，避免静态初始化问题
 #define CAN_MODE TWAI_MODE_NO_ACK  // 改为NO_ACK模式
 static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
-static const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-#define CAN_RECOVERY_BUDGET_MS 300
+
+// ============================================================================
+// CAN过滤器配置 - 多主控制器架构优化
+// ============================================================================
+// 场景：ESP32与自动导航模块共用CAN总线，都向电机驱动器发送指令
+// 问题：两个控制器发送相同ID(0x0600001)会导致TX/RX错误累积
+// 方案：配置过滤器只接收电机驱动器的反馈消息，忽略其他控制器的消息
+//
+// 电机驱动器反馈ID: 0x05800001 (驱动器->控制器)
+// 心跳包ID:        0x07000001 (驱动器->控制器)
+// 控制指令ID:      0x06000001 (控制器->驱动器) - 不需要接收
+//
+// 过滤器设计：使用双过滤器模式，分别匹配0x058xxxxx和0x070xxxxx
+// 注意：过滤器只减少RX队列压力，TX错误（发送冲突）无法通过过滤器解决
+// ============================================================================
+static const twai_filter_config_t f_config = {
+    .acceptance_code = (0x05800000 << 3),  // 29位扩展帧ID左移3位
+    .acceptance_mask = (0x02FFFFFF << 3),  // 掩码：允许0x05xxxxxx和0x07xxxxxx
+    .single_filter = true
+};
+
+// Software TX queue and CAN task config
+#define CAN_TX_QUEUE_LEN 20  // 🔧 减少队列长度，避免旧命令堆积
+#define CAN_TX_BURST_MAX 10  // 🔧 增加单次发送数量，加快队列清空
+#define CAN_RX_BURST_MAX 10
+#define CAN_TASK_STACK_SIZE 4096
+#define CAN_TASK_PRIORITY 8
+#define CAN_INIT_MAX_RETRIES 3
+#define CAN_INIT_RETRY_DELAY_MS 200
+#define CAN_INIT_RESET_DELAY_MS 50
+
+// 🔧 最新速度命令（覆盖式存储，只保留最新值）
+static volatile int8_t latest_speed_left = 0;
+static volatile int8_t latest_speed_right = 0;
+static volatile bool speed_cmd_pending = false;  // 标记有新的速度命令待发送
+
+// ============================================================================
+// 🔧 CAN恢复优化配置 - 防止假死
+// ============================================================================
+#define CAN_RECOVERY_BUDGET_MS 100          // 🔧 优化：单次恢复等待时间从300ms减少到100ms
+#define CAN_RECOVERY_TOTAL_TIMEOUT_MS 500   // 🆕 总恢复超时限制500ms，防止长时间阻塞
+#define CAN_RECOVERY_POLL_INTERVAL_MS 10    // 恢复轮询间隔10ms
+#define CAN_MAX_RECOVERY_ITERATIONS 5       // 🆕 单次恢复最大迭代次数
+
+// ============================================================================
+// 🔧 多主控制器架构 - 错误阈值配置
+// ============================================================================
+// 场景：ESP32与自动导航模块共用CAN总线，发送相同ID时会产生仲裁冲突
+// 冲突会导致TX/RX错误计数器累积，但这是多主架构的正常现象
+// 提高阈值可以避免频繁触发恢复，让系统更稳定
+//
+// CAN错误计数器含义：
+//   0-95:    Error Active  - 正常工作
+//   96-127:  Warning       - 错误增多但仍可工作
+//   128-255: Error Passive - 限制发送能力
+//   256+:    BUS-OFF       - 停止通信
+//
+// 默认阈值127（进入Error Passive时触发恢复）
+// 多主架构建议200（允许更多冲突，只有接近BUS-OFF时才恢复）
+// ============================================================================
+#define CAN_ERROR_THRESHOLD 200             // 🔧 错误计数器阈值（多主架构提高到200）
 
 // 🔧 标记驱动是否已安装（用于跟踪状态）
 static bool twai_driver_installed = false;
 
+typedef struct {
+  twai_message_t message;
+} can_tx_item_t;
+
+static QueueHandle_t can_tx_queue = NULL;
+static twai_status_info_t can_last_status_info;
+static bool can_last_status_valid = false;
+static uint32_t can_last_status_time = 0;
+static volatile twai_state_t can_last_state = TWAI_STATE_STOPPED;
+static uint32_t can_tx_queue_drop_count = 0;
+
+static void can_update_status_cache(const twai_status_info_t *status_info, uint32_t now_ms);
+static void can_send_message(const twai_message_t *message);
+static void can_task(void *pvParameters);
+
 static esp_err_t can_hw_reset_and_reinit(void) {
-  ESP_LOGW(TAG, "🧯 硬复位TWAI外设并重装驱动");
   esp_err_t ret;
+  uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  
+  // ====================================================================
+  // 🛡️ 硬复位频率保护 - 防止频繁硬复位导致系统不稳定或重启失败
+  // ====================================================================
+  
+  // 检查是否在冷却期（硬复位过多后的强制等待）
+  static uint32_t hw_reset_cooldown_until = 0;
+  if (hw_reset_cooldown_until != 0 && current_time < hw_reset_cooldown_until) {
+    ESP_LOGW(TAG, "⏸️ CAN硬复位冷却中，跳过硬复位 (剩余%lus)", 
+             (unsigned long)((hw_reset_cooldown_until - current_time) / 1000));
+    return ESP_ERR_NOT_ALLOWED;
+  }
+  
+  // 重置冷却期
+  if (hw_reset_cooldown_until != 0 && current_time >= hw_reset_cooldown_until) {
+    ESP_LOGI(TAG, "▶️ CAN硬复位冷却期结束");
+    hw_reset_cooldown_until = 0;
+    hw_reset_count = 0;
+  }
+  
+  // 检查短时间内硬复位次数
+  if (last_hw_reset_time != 0 && (current_time - last_hw_reset_time) < CAN_HW_RESET_WINDOW_MS) {
+    hw_reset_count++;
+    if (hw_reset_count > CAN_HW_RESET_MAX_COUNT) {
+      hw_reset_cooldown_until = current_time + CAN_HW_RESET_COOLDOWN_MS;
+      ESP_LOGE(TAG, "🛑 CAN硬复位过于频繁 (%lu次/%lus内)，进入冷却期%ds",
+               (unsigned long)hw_reset_count,
+               (unsigned long)(CAN_HW_RESET_WINDOW_MS / 1000),
+               CAN_HW_RESET_COOLDOWN_MS / 1000);
+      ESP_LOGE(TAG, "⚠️ 请检查: 1.CAN总线连接 2.电源供电 3.终端电阻");
+      return ESP_ERR_NOT_ALLOWED;
+    }
+  } else {
+    // 超出时间窗口，重新计数
+    hw_reset_count = 1;
+  }
+  last_hw_reset_time = current_time;
+  
+  ESP_LOGW(TAG, "🧯 硬复位TWAI外设并重装驱动 (本窗口第%lu次)", (unsigned long)hw_reset_count);
   
   // 获取当前状态
   twai_status_info_t status_info;
@@ -129,25 +250,26 @@ static esp_err_t can_hw_reset_and_reinit(void) {
     }
   }
   
-  // 🔧 如果驱动仍然安装着（卸载失败），使用激进方法
+  // 🔧 如果驱动仍然安装着（卸载失败），使用激进方法（但增加延时保护）
   if (twai_driver_installed) {
     ESP_LOGW(TAG, "⚠️ 正常卸载失败，尝试强制复位...");
     
+    // 🛡️ 增加延时，减少对电源的冲击
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
     // 强制禁用外设时钟，这会使驱动状态无效
     periph_module_disable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时从50ms到100ms
     
     // 复位外设
     periph_module_reset(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时
     
     // 重新启用
     periph_module_enable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时
     
     // 🔧 关键：此时驱动内部状态已损坏，需要标记为未安装
-    // ESP-IDF内部可能仍认为驱动已安装，但外设已被复位
-    // 尝试直接安装，如果失败则说明需要更激进的处理
     twai_driver_installed = false;
   }
   
@@ -164,17 +286,18 @@ static esp_err_t can_hw_reset_and_reinit(void) {
     
     // 再次尝试卸载（可能在复位后状态变了）
     (void)twai_stop();
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(50));
     (void)twai_driver_uninstall();
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(50));
     
-    // 完全复位外设
+    // 🛡️ 完全复位外设（增加延时保护）
+    vTaskDelay(pdMS_TO_TICKS(100));
     periph_module_disable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(150));  // 🔧 增加延时
     periph_module_reset(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(150));
     periph_module_enable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(150));
     
     ret = twai_driver_install(&gc, &t_config, &f_config);
   }
@@ -198,7 +321,7 @@ static esp_err_t can_hw_reset_and_reinit(void) {
     can_recovery_count++;
     consecutive_tx_failures = 0;
     consecutive_recovery_failures = 0;  // 🔧 恢复成功，重置失败计数
-    ESP_LOGI(TAG, "✅ TWAI硬复位恢复成功 (次数:%lu)", (unsigned long)can_recovery_count);
+    ESP_LOGI(TAG, "✅ TWAI硬复位恢复成功 (总次数:%lu)", (unsigned long)can_recovery_count);
   } else {
     ESP_LOGE(TAG, "硬复位后启动TWAI失败: %s", esp_err_to_name(ret));
     consecutive_recovery_failures++;
@@ -213,8 +336,9 @@ static esp_err_t can_hw_reset_and_reinit(void) {
 }
 
 /**
- * CAN总线恢复函数
+ * CAN总线恢复函数（优化版）
  * 当错误计数器过高或处于BUS-OFF状态时，停止并重启CAN驱动
+ * 🆕 优化：添加总超时限制和迭代次数限制，防止长时间阻塞导致假死
  * @param force_recovery 是否强制恢复（跳过时间间隔限制）
  * @return
  * ESP_OK=恢复成功/不需要恢复，ESP_ERR_TIMEOUT=需要恢复但被时间限制跳过，其他=恢复失败
@@ -224,6 +348,7 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
   esp_err_t ret;
   uint32_t current_tick = xTaskGetTickCount();
   uint32_t start_ms = current_tick * portTICK_PERIOD_MS;
+  uint32_t iteration_count = 0;  // 🆕 迭代计数器，防止无限循环
 
   // 🔧 检查是否在恢复暂停期间
   if (recovery_pause_until != 0 && current_tick < recovery_pause_until) {
@@ -264,10 +389,10 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
   } else if (status_info.state == TWAI_STATE_STOPPED) {
     need_recovery = true;
     reason = "STOPPED状态";
-  } else if (status_info.tx_error_counter > 127) {
+  } else if (status_info.tx_error_counter > CAN_ERROR_THRESHOLD) {
     need_recovery = true;
     reason = "TX错误计数器过高";
-  } else if (status_info.rx_error_counter > 127) {
+  } else if (status_info.rx_error_counter > CAN_ERROR_THRESHOLD) {
     need_recovery = true;
     reason = "RX错误计数器过高";
   }
@@ -309,10 +434,19 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
       return can_hw_reset_and_reinit();
     }
     
-    // 错误计数器未饱和，等待自动恢复
-    while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms) <
-           CAN_RECOVERY_BUDGET_MS) {
-      vTaskDelay(pdMS_TO_TICKS(10));
+    // 🆕 优化：使用迭代次数限制代替纯时间循环，防止长时间阻塞
+    iteration_count = 0;
+    while (iteration_count < CAN_MAX_RECOVERY_ITERATIONS) {
+      // 🆕 检查总超时
+      uint32_t elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
+      if (elapsed_ms >= CAN_RECOVERY_TOTAL_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "⏱️ CAN恢复总超时(%lums)，直接硬复位", (unsigned long)elapsed_ms);
+        return can_hw_reset_and_reinit();
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(CAN_RECOVERY_POLL_INTERVAL_MS));
+      iteration_count++;
+      
       if (twai_get_status_info(&status_info) != ESP_OK) {
         break;
       }
@@ -321,17 +455,36 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
       }
     }
     if (status_info.state == TWAI_STATE_RECOVERING) {
+      ESP_LOGW(TAG, "⏱️ RECOVERING状态等待超时(迭代%lu次)，硬复位", (unsigned long)iteration_count);
       return can_hw_reset_and_reinit();
     }
   }
 
   // BUS-OFF 需要先发起恢复
   if (status_info.state == TWAI_STATE_BUS_OFF) {
+    // 🆕 检查总超时
+    uint32_t elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
+    if (elapsed_ms >= CAN_RECOVERY_TOTAL_TIMEOUT_MS) {
+      ESP_LOGW(TAG, "⏱️ BUS-OFF恢复前已超时(%lums)，直接硬复位", (unsigned long)elapsed_ms);
+      return can_hw_reset_and_reinit();
+    }
+    
     ESP_LOGI(TAG, "Initiating TWAI bus recovery...");
     twai_initiate_recovery();
-    while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms) <
-           CAN_RECOVERY_BUDGET_MS) {
-      vTaskDelay(pdMS_TO_TICKS(10));
+    
+    // 🆕 优化：使用迭代次数限制
+    iteration_count = 0;
+    while (iteration_count < CAN_MAX_RECOVERY_ITERATIONS) {
+      // 🆕 检查总超时
+      elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
+      if (elapsed_ms >= CAN_RECOVERY_TOTAL_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "⏱️ BUS-OFF恢复超时(%lums)，直接硬复位", (unsigned long)elapsed_ms);
+        return can_hw_reset_and_reinit();
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(CAN_RECOVERY_POLL_INTERVAL_MS));
+      iteration_count++;
+      
       if (twai_get_status_info(&status_info) != ESP_OK) {
         break;
       }
@@ -342,6 +495,7 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
     }
     if (status_info.state == TWAI_STATE_RECOVERING ||
         status_info.state == TWAI_STATE_BUS_OFF) {
+      ESP_LOGW(TAG, "⏱️ BUS-OFF恢复未完成(迭代%lu次)，硬复位", (unsigned long)iteration_count);
       return can_hw_reset_and_reinit();
     }
   }
@@ -354,6 +508,7 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
     if (ret == ESP_OK) {
       can_recovery_count++;
       consecutive_tx_failures = 0;
+      consecutive_recovery_failures = 0;  // 🆕 恢复成功，重置失败计数
       if (twai_get_status_info(&status_info) == ESP_OK) {
         ESP_LOGI(TAG, "✅ CAN总线已恢复 (次数:%lu, TXErr:%lu, RXErr:%lu)",
                  (unsigned long)can_recovery_count,
@@ -370,7 +525,7 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
       return can_hw_reset_and_reinit();
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(CAN_RECOVERY_POLL_INTERVAL_MS));  // 🔧 使用配置的间隔
 
     ret = twai_start();
     if (ret != ESP_OK) {
@@ -380,6 +535,7 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
     if (ret == ESP_OK) {
       can_recovery_count++;
       consecutive_tx_failures = 0;
+      consecutive_recovery_failures = 0;  // 🆕 恢复成功，重置失败计数
       if (twai_get_status_info(&status_info) == ESP_OK) {
         ESP_LOGI(TAG, "✅ CAN总线已恢复 (次数:%lu, TXErr:%lu, RXErr:%lu)",
                  (unsigned long)can_recovery_count,
@@ -403,64 +559,19 @@ static uint32_t can_rx_overflow_count = 0;      // 溢出计数
 static uint32_t last_overflow_warning_time = 0; // 上次溢出警告时间
 #define OVERFLOW_WARNING_INTERVAL_MS 5000       // 溢出警告间隔5秒
 
-/**
- * CAN接收任务 - 批量清空接收队列
- */
-static void can_rx_task(void *pvParameters) {
-  twai_message_t message;
-  uint32_t rx_count = 0;
-  uint32_t batch_count = 0;
-  uint32_t consecutive_empty_loops = 0;
-
-  ESP_LOGI(TAG, "CAN接收任务已启动");
-
-  while (1) {
-    batch_count = 0;
-
-    while (batch_count < 10) {
-      esp_err_t ret = twai_receive(&message, 0);
-      if (ret == ESP_OK) {
-        rx_count++;
-        batch_count++;
-        consecutive_empty_loops = 0;
-
-        ESP_LOGD(TAG, "📥 CAN RX #%lu: ID=0x%08" PRIX32 "...",
-                 (unsigned long)rx_count, message.identifier);
-      } else if (ret == ESP_ERR_TIMEOUT) {
-        break;
-      } else {
-        ESP_LOGD(TAG, "CAN接收错误: %s", esp_err_to_name(ret));
-        break;
-      }
-    }
-
-    if (batch_count > 0) {
-      vTaskDelay(pdMS_TO_TICKS(2));
-      consecutive_empty_loops = 0;
-    } else {
-      consecutive_empty_loops++;
-      if (consecutive_empty_loops > 10) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-      } else {
-        vTaskDelay(pdMS_TO_TICKS(2));
-      }
-    }
-  }
-}
-
 // 🔧 调试：CAN发送统计
 static uint32_t can_tx_success_count = 0;
 static uint32_t can_tx_timeout_count = 0;
 static uint32_t can_tx_error_count = 0;
 static uint32_t last_status_print_time = 0;
-#define CAN_STATUS_PRINT_INTERVAL_MS 1000 // 每1秒打印一次状态
+#define CAN_STATUS_PRINT_INTERVAL_MS 5000 // 每5秒打印一次状态
 #if ENABLE_CAN_DEBUG
-#define CAN_TX_DEBUG_EVERY_N 5  // 临时改为5，用于调试左右电机命令
+#define CAN_TX_DEBUG_EVERY_N 100  // 每100次发送打印一次
 #define CAN_SKIP_LOG_INTERVAL_MS 500
 static uint32_t can_tx_debug_count = 0;
 static uint32_t last_can_skip_log_time = 0;
 static twai_state_t last_can_state = TWAI_STATE_STOPPED;
-#define CAN_ERROR_DELTA_LOG_INTERVAL_MS 300
+#define CAN_ERROR_DELTA_LOG_INTERVAL_MS 5000  // 每5秒打印一次错误计数变化
 static uint32_t last_error_delta_log_time = 0;
 static uint32_t last_tx_err = 0;
 static uint32_t last_rx_err = 0;
@@ -473,13 +584,27 @@ static uint32_t can_counter_delta(uint32_t current, uint32_t last) {
 }
 #endif
 
+static void can_update_status_cache(const twai_status_info_t *status_info,
+                                    uint32_t now_ms) {
+  if (status_info == NULL) {
+    return;
+  }
+  can_last_status_info = *status_info;
+  can_last_status_valid = true;
+  can_last_status_time = now_ms;
+  can_last_state = status_info->state;
+}
+
 /**
- * 发送CAN数据
+ * Send CAN frame (runs in CAN task).
  */
-static void keya_send_data(uint32_t id, uint8_t *data) {
-  twai_message_t message;
+static void can_send_message(const twai_message_t *message) {
   twai_status_info_t status_info;
   esp_err_t ret;
+
+  if (message == NULL) {
+    return;
+  }
 
   uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
   ret = twai_get_status_info(&status_info);
@@ -490,6 +615,8 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
       ESP_LOGW(TAG, "⚠️ 无法获取CAN状态信息: %s", esp_err_to_name(ret));
     }
     memset(&status_info, 0, sizeof(status_info));
+  } else {
+    can_update_status_cache(&status_info, current_time);
   }
 
   // 🔧 调试：定期打印CAN状态，并检查错误计数器
@@ -553,8 +680,8 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
   // 🔧 发送前检查CAN状态，非RUNNING状态下不发送，触发恢复
   if (status_ok &&
       (status_info.state != TWAI_STATE_RUNNING ||
-       status_info.tx_error_counter > 127 ||
-       status_info.rx_error_counter > 127)) {
+       status_info.tx_error_counter > CAN_ERROR_THRESHOLD ||
+       status_info.rx_error_counter > CAN_ERROR_THRESHOLD)) {
     // 🔧 限制日志频率，每秒最多打印一次
     static uint32_t last_abnormal_log_time = 0;
     if (current_time - last_abnormal_log_time > 1000) {
@@ -584,25 +711,19 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
       ESP_LOGW(TAG, "CAN未恢复到RUNNING状态，跳过发送");
       return;
     }
+    can_update_status_cache(&status_info, current_time);
   } else if (!status_ok) {
     return;
   }
 
-  message.extd = 1;
-  message.identifier = id;
-  message.data_length_code = 8;
-  message.rtr = 0;
-
-  for (int i = 0; i < 8; i++) {
-    message.data[i] = data[i];
-  }
+  twai_message_t tx_message = *message;
 
   // 🔧 调试：检查TX队列是否满
   if (status_ok && status_info.msgs_to_tx >= 18) {  // 队列长度20，接近满时警告
     ESP_LOGW(TAG, "⚠️ CAN TX队列接近满: %lu/20", (unsigned long)status_info.msgs_to_tx);
   }
 
-  esp_err_t result = twai_transmit(&message, 0);
+  esp_err_t result = twai_transmit(&tx_message, 0);
 
   if (result == ESP_OK) {
     can_tx_success_count++;
@@ -615,9 +736,9 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
     if (can_tx_debug_count % CAN_TX_DEBUG_EVERY_N == 0) {
       ESP_LOGI(TAG, "📤 CAN TX OK #%lu: ID=0x%08lX, DATA=%02X %02X %02X %02X %02X %02X %02X %02X",
                (unsigned long)can_tx_success_count,
-               (unsigned long)id,
-               message.data[0], message.data[1], message.data[2], message.data[3],
-               message.data[4], message.data[5], message.data[6], message.data[7]);
+               (unsigned long)tx_message.identifier,
+               tx_message.data[0], tx_message.data[1], tx_message.data[2], tx_message.data[3],
+               tx_message.data[4], tx_message.data[5], tx_message.data[6], tx_message.data[7]);
     }
 #endif
   } else {
@@ -640,22 +761,23 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
         if (status_ok) {
           ESP_LOGW(TAG, "⏱️ CAN发送TIMEOUT (累计%lu次), ID=0x%08lX, TXQ=%lu, DATA=%02X %02X %02X %02X %02X %02X %02X %02X",
                    (unsigned long)can_tx_timeout_count,
-                   (unsigned long)id,
+                   (unsigned long)tx_message.identifier,
                    (unsigned long)status_info.msgs_to_tx,
-                   message.data[0], message.data[1], message.data[2], message.data[3],
-                   message.data[4], message.data[5], message.data[6], message.data[7]);
+                   tx_message.data[0], tx_message.data[1], tx_message.data[2], tx_message.data[3],
+                   tx_message.data[4], tx_message.data[5], tx_message.data[6], tx_message.data[7]);
         } else {
           ESP_LOGW(TAG, "⏱️ CAN发送TIMEOUT (累计%lu次), ID=0x%08lX, DATA=%02X %02X %02X %02X %02X %02X %02X %02X",
                    (unsigned long)can_tx_timeout_count,
-                   (unsigned long)id,
-                   message.data[0], message.data[1], message.data[2], message.data[3],
-                   message.data[4], message.data[5], message.data[6], message.data[7]);
+                   (unsigned long)tx_message.identifier,
+                   tx_message.data[0], tx_message.data[1], tx_message.data[2], tx_message.data[3],
+                   tx_message.data[4], tx_message.data[5], tx_message.data[6], tx_message.data[7]);
         }
       }
       bool is_speed_cmd =
-          (data[0] == 0x23 && data[1] == 0x00 && data[2] == 0x20);
+          (tx_message.data[0] == 0x23 && tx_message.data[1] == 0x00 &&
+           tx_message.data[2] == 0x20);
       if (is_speed_cmd) {
-        twai_transmit(&message, 0);
+        twai_transmit(&tx_message, 0);
       }
       return;
     }
@@ -675,9 +797,199 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
     can_tx_error_count++;
     ESP_LOGW(TAG, "❌ CAN发送失败: %s, ID=0x%08lX, DATA=%02X %02X %02X %02X %02X %02X %02X %02X",
              esp_err_to_name(result),
-             (unsigned long)id,
-             message.data[0], message.data[1], message.data[2], message.data[3],
-             message.data[4], message.data[5], message.data[6], message.data[7]);
+             (unsigned long)tx_message.identifier,
+             tx_message.data[0], tx_message.data[1], tx_message.data[2], tx_message.data[3],
+             tx_message.data[4], tx_message.data[5], tx_message.data[6], tx_message.data[7]);
+  }
+}
+
+/**
+ * CAN任务
+ * 处理CAN发送和接收
+ * 🐕 已添加任务看门狗监控
+ */
+static void can_task(void *pvParameters) {
+  twai_message_t rx_message;
+  can_tx_item_t tx_item;
+  uint32_t rx_count = 0;
+  uint32_t batch_count = 0;
+  uint32_t consecutive_empty_loops = 0;
+  uint32_t wdt_feed_counter = 0;  // 🐕 喂狗计数器
+
+  (void)pvParameters;
+  ESP_LOGI(TAG, "CAN task started");
+
+  // 🐕 订阅任务看门狗监控
+  esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+  if (wdt_ret == ESP_OK) {
+    ESP_LOGI(TAG, "🐕 CAN任务已加入看门狗监控");
+  } else {
+    ESP_LOGW(TAG, "⚠️ CAN任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
+  }
+
+  twai_status_info_t init_status;
+  uint32_t init_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  if (twai_get_status_info(&init_status) == ESP_OK) {
+    can_update_status_cache(&init_status, init_time);
+  }
+
+  while (1) {
+    // 🐕 定期喂狗 - 每500次循环喂狗一次（约5秒，因为每次循环2-10ms）
+    wdt_feed_counter++;
+    if (wdt_feed_counter >= 500) {
+      esp_task_wdt_reset();
+      wdt_feed_counter = 0;
+    }
+
+    bool did_work = false;
+    uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    if (!can_last_status_valid ||
+        (now_ms - can_last_status_time) > CAN_STATUS_PRINT_INTERVAL_MS) {
+      twai_status_info_t status_info;
+      if (twai_get_status_info(&status_info) == ESP_OK) {
+        can_update_status_cache(&status_info, now_ms);
+      }
+    }
+
+    for (int i = 0; i < CAN_TX_BURST_MAX; i++) {
+      if (xQueueReceive(can_tx_queue, &tx_item, 0) != pdTRUE) {
+        break;
+      }
+      did_work = true;
+      can_send_message(&tx_item.message);
+    }
+
+    // 🔧 发送最新速度命令（覆盖式，只发最新值）
+    // 这样即使上层调用频繁，CAN总线也只发送最新的速度命令
+    if (speed_cmd_pending) {
+      speed_cmd_pending = false;
+      
+      // 读取最新速度值
+      int8_t sp_left = latest_speed_left;
+      int8_t sp_right = latest_speed_right;
+      
+      // 发送心跳（包含速度信息）
+      uint8_t hb_data[8] = {0};
+      hb_data[0] = CONTROLLER_ID;
+      hb_data[1] = HEARTBEAT_STATUS_ACTIVE;
+      hb_data[2] = (heartbeat_seq >> 8) & 0xFF;
+      hb_data[3] = heartbeat_seq & 0xFF;
+      heartbeat_seq++;
+      int16_t sp_a_hb = (int16_t)sp_left * 100;
+      hb_data[4] = (sp_a_hb >> 8) & 0xFF;
+      hb_data[5] = sp_a_hb & 0xFF;
+      int16_t sp_b_hb = (int16_t)sp_right * 100;
+      hb_data[6] = (sp_b_hb >> 8) & 0xFF;
+      hb_data[7] = sp_b_hb & 0xFF;
+      
+      twai_message_t hb_msg = {
+        .extd = 1,
+        .identifier = CONTROLLER_HEARTBEAT_ID,
+        .data_length_code = 8,
+        .rtr = 0
+      };
+      memcpy(hb_msg.data, hb_data, 8);
+      can_send_message(&hb_msg);
+      
+      // 发送左电机速度命令
+      uint8_t speed_data_a[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_A, 0, 0, 0, 0};
+      int16_t sp_a = (int16_t)sp_left * 100;
+      speed_data_a[4] = (sp_a >> 8) & 0xFF;
+      speed_data_a[5] = sp_a & 0xFF;
+      
+      twai_message_t speed_msg_a = {
+        .extd = 1,
+        .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
+        .data_length_code = 8,
+        .rtr = 0
+      };
+      memcpy(speed_msg_a.data, speed_data_a, 8);
+      can_send_message(&speed_msg_a);
+      
+      // 发送右电机速度命令
+      uint8_t speed_data_b[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_B, 0, 0, 0, 0};
+      int16_t sp_b = (int16_t)sp_right * 100;
+      speed_data_b[4] = (sp_b >> 8) & 0xFF;
+      speed_data_b[5] = sp_b & 0xFF;
+      
+      twai_message_t speed_msg_b = {
+        .extd = 1,
+        .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
+        .data_length_code = 8,
+        .rtr = 0
+      };
+      memcpy(speed_msg_b.data, speed_data_b, 8);
+      can_send_message(&speed_msg_b);
+      
+      did_work = true;
+    }
+
+    batch_count = 0;
+    while (batch_count < CAN_RX_BURST_MAX) {
+      esp_err_t ret = twai_receive(&rx_message, 0);
+      if (ret == ESP_OK) {
+        rx_count++;
+        batch_count++;
+        did_work = true;
+        ESP_LOGD(TAG, "CAN RX #%lu: ID=0x%08" PRIX32 "...",
+                 (unsigned long)rx_count, rx_message.identifier);
+      } else if (ret == ESP_ERR_TIMEOUT) {
+        break;
+      } else {
+        ESP_LOGD(TAG, "CAN RX error: %s", esp_err_to_name(ret));
+        break;
+      }
+    }
+
+    if (batch_count > 0) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+      consecutive_empty_loops = 0;
+    } else if (!did_work) {
+      consecutive_empty_loops++;
+      if (consecutive_empty_loops > 10) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(2));
+      }
+    } else {
+      consecutive_empty_loops = 0;
+    }
+  }
+}
+
+/**
+ * Enqueue CAN frame for CAN task.
+ */
+static void keya_send_data(uint32_t id, uint8_t *data) {
+  static uint32_t last_queue_drop_log_time = 0;
+  uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+  if (can_tx_queue == NULL) {
+    if (now_ms - last_queue_drop_log_time > 1000) {
+      last_queue_drop_log_time = now_ms;
+      ESP_LOGW(TAG, "CAN TX queue not ready, drop msg");
+    }
+    return;
+  }
+
+  can_tx_item_t item;
+  memset(&item, 0, sizeof(item));
+  item.message.extd = 1;
+  item.message.identifier = id;
+  item.message.data_length_code = 8;
+  item.message.rtr = 0;
+  for (int i = 0; i < 8; i++) {
+    item.message.data[i] = data[i];
+  }
+
+  if (xQueueSend(can_tx_queue, &item, 0) != pdTRUE) {
+    can_tx_queue_drop_count++;
+    if (now_ms - last_queue_drop_log_time > 1000) {
+      last_queue_drop_log_time = now_ms;
+      ESP_LOGW(TAG, "CAN TX queue full, drop msg (drop=%lu)",
+               (unsigned long)can_tx_queue_drop_count);
+    }
   }
 }
 
@@ -751,14 +1063,70 @@ esp_err_t drv_keyadouble_init(void) {
   g_config.tx_queue_len = 20;
   g_config.rx_queue_len = 50;
 
-  ESP_ERROR_CHECK(twai_driver_install(&g_config, &t_config, &f_config));
-  twai_driver_installed = true;  // 🔧 标记驱动已安装
-  ESP_ERROR_CHECK(twai_start());
+  esp_err_t ret = ESP_OK;
+  for (int attempt = 1; attempt <= CAN_INIT_MAX_RETRIES; attempt++) {
+    if (twai_driver_installed) {
+      twai_stop();
+      twai_driver_uninstall();
+      twai_driver_installed = false;
+    }
+
+    periph_module_reset(PERIPH_TWAI_MODULE);
+    vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RESET_DELAY_MS));
+
+    ret = twai_driver_install(&g_config, &t_config, &f_config);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "CAN install failed (%d/%d): %s",
+               attempt, CAN_INIT_MAX_RETRIES, esp_err_to_name(ret));
+      if (attempt < CAN_INIT_MAX_RETRIES) {
+        vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RETRY_DELAY_MS));
+      }
+      continue;
+    }
+
+    twai_driver_installed = true;
+    ret = twai_start();
+    if (ret == ESP_OK) {
+      break;
+    }
+
+    ESP_LOGW(TAG, "CAN start failed (%d/%d): %s",
+             attempt, CAN_INIT_MAX_RETRIES, esp_err_to_name(ret));
+    twai_driver_uninstall();
+    twai_driver_installed = false;
+
+    if (attempt < CAN_INIT_MAX_RETRIES) {
+      vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RETRY_DELAY_MS));
+    }
+  }
+
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "CAN init failed after %d attempts: %s",
+             CAN_INIT_MAX_RETRIES, esp_err_to_name(ret));
+    return ret;
+  }
 
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  // 🔧 优化：提高 CAN RX 任务优先级到 8，确保及时清空接收队列
-  xTaskCreate(can_rx_task, "can_rx_task", 2048, NULL, 8, &can_rx_task_handle);
+  can_tx_queue = xQueueCreate(CAN_TX_QUEUE_LEN, sizeof(can_tx_item_t));
+  if (can_tx_queue == NULL) {
+    ESP_LOGE(TAG, "Failed to create CAN TX queue");
+    twai_stop();
+    twai_driver_uninstall();
+    twai_driver_installed = false;
+    return ESP_ERR_NO_MEM;
+  }
+
+  if (xTaskCreate(can_task, "can_task", CAN_TASK_STACK_SIZE, NULL,
+                  CAN_TASK_PRIORITY, &can_task_handle) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create CAN task");
+    vQueueDelete(can_tx_queue);
+    can_tx_queue = NULL;
+    twai_stop();
+    twai_driver_uninstall();
+    twai_driver_installed = false;
+    return ESP_ERR_NO_MEM;
+  }
 
   can_recovery_count = 0;
 
@@ -767,6 +1135,10 @@ esp_err_t drv_keyadouble_init(void) {
   can_tx_timeout_count = 0;
   can_tx_error_count = 0;
   last_status_print_time = 0;
+  can_tx_queue_drop_count = 0;
+  can_last_status_valid = false;
+  can_last_status_time = 0;
+  can_last_state = TWAI_STATE_STOPPED;
 
   const char *mode_str =
 #if CAN_MODE == TWAI_MODE_NO_ACK
@@ -774,9 +1146,10 @@ esp_err_t drv_keyadouble_init(void) {
 #else
       "Normal Mode";
 #endif
-  ESP_LOGI(TAG, "Motor driver initialized (%s, Priority 8 RX Task)", mode_str);
-  ESP_LOGI(TAG, "📊 CAN配置: TX_Q=%d, RX_Q=%d, 250kbps, GPIO16/17",
-           g_config.tx_queue_len, g_config.rx_queue_len);
+  ESP_LOGI(TAG, "Motor driver initialized (%s, CAN task prio %d)",
+           mode_str, CAN_TASK_PRIORITY);
+  ESP_LOGI(TAG, "CAN config: TX_Q=%d, RX_Q=%d, SW_TX_Q=%d, 250kbps, GPIO16/17",
+           g_config.tx_queue_len, g_config.rx_queue_len, CAN_TX_QUEUE_LEN);
   return ESP_OK;
 }
 
@@ -784,36 +1157,40 @@ esp_err_t drv_keyadouble_init(void) {
  * 打印CAN诊断信息（可从外部调用）
  */
 void drv_keyadouble_print_diag(void) {
-  twai_status_info_t status_info;
-  if (twai_get_status_info(&status_info) == ESP_OK) {
-    const char* state_str = "UNKNOWN";
-    switch(status_info.state) {
-      case TWAI_STATE_STOPPED: state_str = "STOPPED"; break;
-      case TWAI_STATE_RUNNING: state_str = "RUNNING"; break;
-      case TWAI_STATE_BUS_OFF: state_str = "BUS_OFF"; break;
-      case TWAI_STATE_RECOVERING: state_str = "RECOVERING"; break;
-    }
-    ESP_LOGI(TAG, "═══════════════════════════════════════════");
-    ESP_LOGI(TAG, "📊 CAN诊断信息");
-    ESP_LOGI(TAG, "═══════════════════════════════════════════");
-    ESP_LOGI(TAG, "状态: %s (%d)", state_str, status_info.state);
-    ESP_LOGI(TAG, "TX错误计数: %lu (>127触发恢复, >255=BUS_OFF)",
-             (unsigned long)status_info.tx_error_counter);
-    ESP_LOGI(TAG, "RX错误计数: %lu", (unsigned long)status_info.rx_error_counter);
-    ESP_LOGI(TAG, "TX队列待发: %lu/20", (unsigned long)status_info.msgs_to_tx);
-    ESP_LOGI(TAG, "RX队列待收: %lu/50", (unsigned long)status_info.msgs_to_rx);
-    ESP_LOGI(TAG, "TX失败次数: %lu", (unsigned long)status_info.tx_failed_count);
-    ESP_LOGI(TAG, "RX丢失次数: %lu", (unsigned long)status_info.rx_missed_count);
-    ESP_LOGI(TAG, "仲裁丢失: %lu", (unsigned long)status_info.arb_lost_count);
-    ESP_LOGI(TAG, "总线错误: %lu", (unsigned long)status_info.bus_error_count);
-    ESP_LOGI(TAG, "───────────────────────────────────────────");
-    ESP_LOGI(TAG, "发送统计: 成功=%lu, TIMEOUT=%lu, 错误=%lu",
-             (unsigned long)can_tx_success_count,
-             (unsigned long)can_tx_timeout_count,
-             (unsigned long)can_tx_error_count);
-    ESP_LOGI(TAG, "恢复次数: %lu", (unsigned long)can_recovery_count);
-    ESP_LOGI(TAG, "═══════════════════════════════════════════");
+  if (!can_last_status_valid) {
+    ESP_LOGW(TAG, "CAN status not ready");
+    return;
   }
+
+  twai_status_info_t status_info = can_last_status_info;
+  const char* state_str = "UNKNOWN";
+  switch(status_info.state) {
+    case TWAI_STATE_STOPPED: state_str = "STOPPED"; break;
+    case TWAI_STATE_RUNNING: state_str = "RUNNING"; break;
+    case TWAI_STATE_BUS_OFF: state_str = "BUS_OFF"; break;
+    case TWAI_STATE_RECOVERING: state_str = "RECOVERING"; break;
+  }
+  ESP_LOGI(TAG, "═══════════════════════════════════════════");
+  ESP_LOGI(TAG, "📊 CAN诊断信息");
+  ESP_LOGI(TAG, "═══════════════════════════════════════════");
+  ESP_LOGI(TAG, "状态: %s (%d)", state_str, status_info.state);
+  ESP_LOGI(TAG, "TX错误计数: %lu (>%d触发恢复, >255=BUS_OFF)",
+           (unsigned long)status_info.tx_error_counter, CAN_ERROR_THRESHOLD);
+  ESP_LOGI(TAG, "RX错误计数: %lu", (unsigned long)status_info.rx_error_counter);
+  ESP_LOGI(TAG, "TX队列待发: %lu/20", (unsigned long)status_info.msgs_to_tx);
+  ESP_LOGI(TAG, "RX队列待收: %lu/50", (unsigned long)status_info.msgs_to_rx);
+  ESP_LOGI(TAG, "TX失败次数: %lu", (unsigned long)status_info.tx_failed_count);
+  ESP_LOGI(TAG, "RX丢失次数: %lu", (unsigned long)status_info.rx_missed_count);
+  ESP_LOGI(TAG, "仲裁丢失: %lu", (unsigned long)status_info.arb_lost_count);
+  ESP_LOGI(TAG, "总线错误: %lu", (unsigned long)status_info.bus_error_count);
+  ESP_LOGI(TAG, "───────────────────────────────────────────");
+  ESP_LOGI(TAG, "发送统计: 成功=%lu, TIMEOUT=%lu, 错误=%lu",
+           (unsigned long)can_tx_success_count,
+           (unsigned long)can_tx_timeout_count,
+           (unsigned long)can_tx_error_count);
+  ESP_LOGI(TAG, "TX queue drops: %lu", (unsigned long)can_tx_queue_drop_count);
+  ESP_LOGI(TAG, "恢复次数: %lu", (unsigned long)can_recovery_count);
+  ESP_LOGI(TAG, "═══════════════════════════════════════════");
 }
 
 // 🔧 电机使能状态跟踪（用于减少CAN消息数量）
@@ -836,19 +1213,16 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
   bk_flag_right = (speed_right != 0) ? 1 : 0;
 
   // 🔧 仅记录非RUNNING状态，恢复交给发送逻辑处理
-  twai_status_info_t status_info;
-  if (twai_get_status_info(&status_info) == ESP_OK) {
-    if (status_info.state != TWAI_STATE_RUNNING) {
-      static uint32_t last_non_running_warn = 0;
-      uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-      if (now - last_non_running_warn > 1000) {
-        ESP_LOGW(TAG, "⚠️ CAN状态异常: State=%d", (int)status_info.state);
-        last_non_running_warn = now;
-      }
-      // CAN异常时重置使能状态，下次恢复后需要重新使能
-      motor_a_enabled = false;
-      motor_b_enabled = false;
+  if (can_last_status_valid && can_last_state != TWAI_STATE_RUNNING) {
+    static uint32_t last_non_running_warn = 0;
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (now - last_non_running_warn > 1000) {
+      ESP_LOGW(TAG, "⚠️ CAN状态异常: State=%d", (int)can_last_state);
+      last_non_running_warn = now;
     }
+    // CAN异常时重置使能状态，下次恢复后需要重新使能
+    motor_a_enabled = false;
+    motor_b_enabled = false;
   }
 
   uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -881,10 +1255,13 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
     last_speed_right = speed_right;
   }
 
-  // 发送心跳（每次都发）
-  send_controller_heartbeat(speed_left, speed_right);
+  // 🔧 只更新最新速度值，不直接发送到队列
+  // CAN task 会周期性读取并发送最新值，避免队列堆积旧命令
+  latest_speed_left = speed_left;
+  latest_speed_right = speed_right;
+  speed_cmd_pending = true;
 
-  // 🔧 条件发送使能命令（减少CAN流量）
+  // 🔧 条件发送使能命令（通过队列，优先级较低）
   if (need_enable_a) {
     motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
     motor_a_enabled = true;
@@ -896,9 +1273,7 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
     ESP_LOGD(TAG, "📤 发送B路使能命令");
   }
 
-  // 发送速度命令（每次都发）
-  motor_control(CMD_SPEED, MOTOR_CHANNEL_A, speed_left);
-  motor_control(CMD_SPEED, MOTOR_CHANNEL_B, speed_right);
+  // 🔧 注意：速度命令不再这里发送，改由 CAN task 周期性发送最新值
 
   // 更新使能状态（速度为0时标记为未使能，下次非零时重新使能）
   if (speed_left == 0) {
