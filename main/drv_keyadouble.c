@@ -564,7 +564,7 @@ static uint32_t can_tx_success_count = 0;
 static uint32_t can_tx_timeout_count = 0;
 static uint32_t can_tx_error_count = 0;
 static uint32_t last_status_print_time = 0;
-#define CAN_STATUS_PRINT_INTERVAL_MS 5000 // 每5秒打印一次状态
+#define CAN_STATUS_PRINT_INTERVAL_MS 10000 // 每10秒打印一次状态
 #if ENABLE_CAN_DEBUG
 #define CAN_TX_DEBUG_EVERY_N 100  // 每100次发送打印一次
 #define CAN_SKIP_LOG_INTERVAL_MS 500
