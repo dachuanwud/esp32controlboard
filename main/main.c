@@ -409,6 +409,9 @@ static void cmd_uart_task(void *pvParameters)
 static void motor_control_task(void *pvParameters)
 {
     sbus_data_t sbus_data;
+    const TickType_t control_loop_delay = pdMS_TO_TICKS(1);
+    const TickType_t sbus_failsafe_timeout = pdMS_TO_TICKS(200);
+    bool sbus_failsafe_active = false;
 #if ENABLE_CMD_VEL
     motor_cmd_t motor_cmd;
     uint32_t cmd_last_time = 0;  // 🔧 修复：使用时间戳而非超时值，避免溢出问题
@@ -432,10 +435,16 @@ static void motor_control_task(void *pvParameters)
 #if ENABLE_CMD_VEL
         // 检查是否有CMD_VEL命令
         if (xQueueReceive(cmd_queue, &motor_cmd, 0) == pdPASS) {
+            motor_cmd_t latest_cmd;
+            while (xQueueReceive(cmd_queue, &latest_cmd, 0) == pdPASS) {
+                motor_cmd = latest_cmd;
+            }
+
             // 收到CMD_VEL命令，优先处理
             parse_cmd_vel(motor_cmd.speed_left, motor_cmd.speed_right);
             cmd_last_time = xTaskGetTickCount();  // 🔧 修复：记录接收时间戳
             sbus_control = false;
+            sbus_failsafe_active = false;
 
             // 保存电机状态用于Web接口
             g_last_motor_left = motor_cmd.speed_left;
@@ -444,24 +453,59 @@ static void motor_control_task(void *pvParameters)
         }
         // 检查是否有SBUS数据
         else if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
+            sbus_data_t latest_sbus_data;
+            while (xQueueReceive(sbus_queue, &latest_sbus_data, 0) == pdPASS) {
+                sbus_data = latest_sbus_data;
+            }
+
             // 如果没有活跃的CMD_VEL命令或CMD_VEL已超时，则处理SBUS
             // 🔧 修复：使用差值比较避免时间戳溢出问题
             uint32_t time_since_cmd = xTaskGetTickCount() - cmd_last_time;
             if (sbus_control || time_since_cmd > pdMS_TO_TICKS(1000)) {
                 parse_chan_val(sbus_data.channel);
                 sbus_control = true;
+                sbus_failsafe_active = false;
             }
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        bool cmd_vel_active = (cmd_last_time != 0) &&
+                              ((now - cmd_last_time) <= pdMS_TO_TICKS(1000));
+        if (!cmd_vel_active && g_last_sbus_update != 0 &&
+            (now - g_last_sbus_update) > sbus_failsafe_timeout &&
+            !sbus_failsafe_active) {
+            channel_parse_force_stop("SBUS timeout");
+            g_last_motor_left = 0;
+            g_last_motor_right = 0;
+            g_last_motor_update = now;
+            sbus_failsafe_active = true;
+            sbus_control = true;
         }
 #else
         // CMD_VEL已禁用，直接处理SBUS数据
         if (xQueueReceive(sbus_queue, &sbus_data, 0) == pdPASS) {
+            sbus_data_t latest_sbus_data;
+            while (xQueueReceive(sbus_queue, &latest_sbus_data, 0) == pdPASS) {
+                sbus_data = latest_sbus_data;
+            }
             parse_chan_val(sbus_data.channel);
+            sbus_failsafe_active = false;
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if (g_last_sbus_update != 0 &&
+            (now - g_last_sbus_update) > sbus_failsafe_timeout &&
+            !sbus_failsafe_active) {
+            channel_parse_force_stop("SBUS timeout");
+            g_last_motor_left = 0;
+            g_last_motor_right = 0;
+            g_last_motor_update = now;
+            sbus_failsafe_active = true;
         }
 #endif
 
-        // 🔄 调整为100ms延迟，控制频率10Hz
-        // 降低频率减少CAN总线负载和日志输出
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // 高频轮询最新输入，尽快把最新SBUS值传到CAN层
+        vTaskDelay(control_loop_delay);
     }
 }
 

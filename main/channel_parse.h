@@ -18,4 +18,11 @@ uint8_t parse_chan_val(uint16_t* ch_val);
  */
 uint8_t parse_cmd_vel(uint8_t spl, uint8_t spr);
 
+/**
+ * 强制下发停止命令
+ * 用于遥控失联、上层超时保护等场景
+ * @param reason 停止原因，可为NULL
+ */
+void channel_parse_force_stop(const char *reason);
+
 #endif /* CHANNEL_PARSE_H */

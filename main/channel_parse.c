@@ -18,6 +18,21 @@ static uint8_t (*intf_move)(int8_t, int8_t) = intf_move_keyadouble;
 static uint16_t last_ch_val[16] = {0};
 static bool first_run = true;
 #define CLAIM_WINDOW_MS 500
+static int8_t last_left_speed = 0;
+static int8_t last_right_speed = 0;
+
+void channel_parse_force_stop(const char *reason)
+{
+    if (last_left_speed != 0 || last_right_speed != 0) {
+        ESP_LOGW(TAG, "🛑 Force stop: %s (last L:%d R:%d)",
+                 reason != NULL ? reason : "unknown",
+                 last_left_speed, last_right_speed);
+    }
+
+    intf_move(0, 0);
+    last_left_speed = 0;
+    last_right_speed = 0;
+}
 
 /**
  * 将通道值转换为速度值
@@ -89,6 +104,12 @@ static int8_t cal_offset(int8_t v1, int8_t v2)
  */
 uint8_t parse_chan_val(uint16_t* ch_val)
 {
+    static bool last_remote_enabled = false;
+    static bool last_single_hand_mode = false;
+    static bool last_low_speed_mode = false;
+    static bool claim_window_active = false;
+    static uint32_t claim_start_tick = 0;
+
     // ⚡ 性能优化：始终执行控制逻辑，确保实时响应
     // 移除变化检测的限制，让CAN总线始终发送最新的控制命令
     // 这样可以确保即使微小的控制变化也能立即响应
@@ -103,13 +124,6 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         int8_t sp_fb = chg_val(ch_val[2]); // 前后分量，向前>0
         int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
 
-        // 记录特殊模式状态变化
-        static bool last_remote_enabled = false;
-        static bool last_single_hand_mode = false;
-        static bool last_low_speed_mode = false;
-        static bool claim_window_active = false;
-        static uint32_t claim_start_tick = 0;
-        
         // CH4 遥控使能开关：1050=使能，1500/1950=禁用
         // 使用范围判断（<=1100）而非严格相等，容忍SBUS信号波动（±50）
         bool current_remote_enabled = (ch_val[4] <= 1100);
@@ -141,8 +155,10 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             last_low_speed_mode = current_low_speed;
         }
 
-        // 🔒 如果遥控未使能，直接返回，不发送任何 CAN 信号
+        // 🔒 遥控未使能时必须明确下发停止，避免驱动器保持上一条速度命令
         if (!current_remote_enabled) {
+            channel_parse_force_stop("remote disabled");
+            update_last_channels(ch_val);
             return 0;
         }
 
@@ -175,13 +191,16 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         //   - 如果遥控器质量很好，可以设置为 ±2
         //   - 如果遥控器质量一般，建议设置为 ±3 或 ±4
         //   - 如果遥控器质量较差，可以设置为 ±5
+        #define FB_DEADZONE 3
         #define LR_DEADZONE 3
+        if (abs(sp_fb) <= FB_DEADZONE) {
+            sp_fb = 0;
+        }
         if (abs(sp_lr) <= LR_DEADZONE) {
             sp_lr = 0;
         }
 
         // 履带车差速控制逻辑
-        static int8_t last_left_speed = 0, last_right_speed = 0;
         int8_t left_speed, right_speed;
 
         // ⚡ 性能优化：增大速度变化阈值，减少不必要的日志输出

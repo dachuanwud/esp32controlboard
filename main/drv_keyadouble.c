@@ -8,18 +8,11 @@
 
 static const char *TAG = "DRV_KEYA";
 
-static void send_controller_heartbeat(int8_t speed_left, int8_t speed_right);
-
 // 电机驱动CAN ID定义
 #define DRIVER_ADDRESS 0x01            // 驱动器地址(默认为1)
 #define DRIVER_TX_ID 0x06000000        // 发送基础ID (控制->驱动器)
 #define DRIVER_RX_ID 0x05800000        // 接收基础ID (驱动器->控制)
 #define DRIVER_HEARTBEAT_ID 0x07000000 // 心跳包ID (驱动器->控制)
-
-// 控制器心跳ID定义 (用于多控制器仲裁)
-#define CONTROLLER_ID 0x01                // A控制器ID
-#define CONTROLLER_HEARTBEAT_ID 0x1800001 // 控制器心跳帧ID
-#define HEARTBEAT_STATUS_ACTIVE 0x01      // 状态：正常控车中
 
 // 电机通道定义
 #define MOTOR_CHANNEL_A 0x01 // A路电机(左侧)
@@ -33,9 +26,6 @@ static void send_controller_heartbeat(int8_t speed_left, int8_t speed_right);
 // 外部变量
 uint8_t bk_flag_left = 0;
 uint8_t bk_flag_right = 0;
-
-// 控制器心跳序列号
-static uint16_t heartbeat_seq = 0;
 
 // CAN task handle (TX/RX/recovery in one task)
 static TaskHandle_t can_task_handle = NULL;
@@ -99,6 +89,7 @@ static const twai_filter_config_t f_config = {
 #define CAN_TX_QUEUE_LEN 20  // 🔧 减少队列长度，避免旧命令堆积
 #define CAN_TX_BURST_MAX 10  // 🔧 增加单次发送数量，加快队列清空
 #define CAN_RX_BURST_MAX 10
+#define CAN_CONTROL_PERIOD_MS 50
 #define CAN_TASK_STACK_SIZE 4096
 #define CAN_TASK_PRIORITY 8
 #define CAN_INIT_MAX_RETRIES 3
@@ -152,6 +143,7 @@ static uint32_t can_tx_queue_drop_count = 0;
 
 static void can_update_status_cache(const twai_status_info_t *status_info, uint32_t now_ms);
 static void can_send_message(const twai_message_t *message);
+static void can_send_latest_speed_snapshot(void);
 static void can_task(void *pvParameters);
 
 static esp_err_t can_hw_reset_and_reinit(void) {
@@ -803,6 +795,39 @@ static void can_send_message(const twai_message_t *message) {
   }
 }
 
+static void can_send_latest_speed_snapshot(void) {
+  int8_t sp_left = latest_speed_left;
+  int8_t sp_right = latest_speed_right;
+
+  uint8_t speed_data_a[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_A, 0, 0, 0, 0};
+  int16_t sp_a = (int16_t)sp_left * 100;
+  speed_data_a[4] = (sp_a >> 8) & 0xFF;
+  speed_data_a[5] = sp_a & 0xFF;
+
+  twai_message_t speed_msg_a = {
+    .extd = 1,
+    .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
+    .data_length_code = 8,
+    .rtr = 0
+  };
+  memcpy(speed_msg_a.data, speed_data_a, 8);
+  can_send_message(&speed_msg_a);
+
+  uint8_t speed_data_b[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_B, 0, 0, 0, 0};
+  int16_t sp_b = (int16_t)sp_right * 100;
+  speed_data_b[4] = (sp_b >> 8) & 0xFF;
+  speed_data_b[5] = sp_b & 0xFF;
+
+  twai_message_t speed_msg_b = {
+    .extd = 1,
+    .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
+    .data_length_code = 8,
+    .rtr = 0
+  };
+  memcpy(speed_msg_b.data, speed_data_b, 8);
+  can_send_message(&speed_msg_b);
+}
+
 /**
  * CAN任务
  * 处理CAN发送和接收
@@ -815,6 +840,7 @@ static void can_task(void *pvParameters) {
   uint32_t batch_count = 0;
   uint32_t consecutive_empty_loops = 0;
   uint32_t wdt_feed_counter = 0;  // 🐕 喂狗计数器
+  uint32_t last_control_send_ms = 0;
 
   (void)pvParameters;
   ESP_LOGI(TAG, "CAN task started");
@@ -860,68 +886,12 @@ static void can_task(void *pvParameters) {
       can_send_message(&tx_item.message);
     }
 
-    // 🔧 发送最新速度命令（覆盖式，只发最新值）
-    // 这样即使上层调用频繁，CAN总线也只发送最新的速度命令
-    if (speed_cmd_pending) {
+    // 固定20Hz发送最新速度快照，兼顾跟手性和总线负载
+    if (last_control_send_ms == 0 ||
+        (now_ms - last_control_send_ms) >= CAN_CONTROL_PERIOD_MS) {
       speed_cmd_pending = false;
-      
-      // 读取最新速度值
-      int8_t sp_left = latest_speed_left;
-      int8_t sp_right = latest_speed_right;
-      
-      // 发送心跳（包含速度信息）
-      uint8_t hb_data[8] = {0};
-      hb_data[0] = CONTROLLER_ID;
-      hb_data[1] = HEARTBEAT_STATUS_ACTIVE;
-      hb_data[2] = (heartbeat_seq >> 8) & 0xFF;
-      hb_data[3] = heartbeat_seq & 0xFF;
-      heartbeat_seq++;
-      int16_t sp_a_hb = (int16_t)sp_left * 100;
-      hb_data[4] = (sp_a_hb >> 8) & 0xFF;
-      hb_data[5] = sp_a_hb & 0xFF;
-      int16_t sp_b_hb = (int16_t)sp_right * 100;
-      hb_data[6] = (sp_b_hb >> 8) & 0xFF;
-      hb_data[7] = sp_b_hb & 0xFF;
-      
-      twai_message_t hb_msg = {
-        .extd = 1,
-        .identifier = CONTROLLER_HEARTBEAT_ID,
-        .data_length_code = 8,
-        .rtr = 0
-      };
-      memcpy(hb_msg.data, hb_data, 8);
-      can_send_message(&hb_msg);
-      
-      // 发送左电机速度命令
-      uint8_t speed_data_a[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_A, 0, 0, 0, 0};
-      int16_t sp_a = (int16_t)sp_left * 100;
-      speed_data_a[4] = (sp_a >> 8) & 0xFF;
-      speed_data_a[5] = sp_a & 0xFF;
-      
-      twai_message_t speed_msg_a = {
-        .extd = 1,
-        .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
-        .data_length_code = 8,
-        .rtr = 0
-      };
-      memcpy(speed_msg_a.data, speed_data_a, 8);
-      can_send_message(&speed_msg_a);
-      
-      // 发送右电机速度命令
-      uint8_t speed_data_b[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_B, 0, 0, 0, 0};
-      int16_t sp_b = (int16_t)sp_right * 100;
-      speed_data_b[4] = (sp_b >> 8) & 0xFF;
-      speed_data_b[5] = sp_b & 0xFF;
-      
-      twai_message_t speed_msg_b = {
-        .extd = 1,
-        .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
-        .data_length_code = 8,
-        .rtr = 0
-      };
-      memcpy(speed_msg_b.data, speed_data_b, 8);
-      can_send_message(&speed_msg_b);
-      
+      can_send_latest_speed_snapshot();
+      last_control_send_ms = now_ms;
       did_work = true;
     }
 
@@ -1023,34 +993,6 @@ static void motor_control(uint8_t cmd_type, uint8_t channel, int8_t speed) {
   }
 
   keya_send_data(tx_id, tx_data);
-}
-
-/**
- * 发送控制器心跳帧
- * 注意：心跳帧是广播帧，没有接收方会发送ACK
- * 在 NO_ACK 模式下不应该累积错误，但为安全起见仍做检查
- */
-static void send_controller_heartbeat(int8_t speed_left, int8_t speed_right) {
-  uint8_t tx_data[8] = {0};
-  tx_data[0] = CONTROLLER_ID;
-  tx_data[1] = HEARTBEAT_STATUS_ACTIVE;
-  tx_data[2] = (heartbeat_seq >> 8) & 0xFF;
-  tx_data[3] = heartbeat_seq & 0xFF;
-  heartbeat_seq++;
-
-  int16_t sp_a = (int16_t)speed_left * 100;
-  tx_data[4] = (sp_a >> 8) & 0xFF;
-  tx_data[5] = sp_a & 0xFF;
-
-  int16_t sp_b = (int16_t)speed_right * 100;
-  tx_data[6] = (sp_b >> 8) & 0xFF;
-  tx_data[7] = sp_b & 0xFF;
-
-  keya_send_data(CONTROLLER_HEARTBEAT_ID, tx_data);
-}
-
-void drv_keyadouble_send_heartbeat(int8_t speed_left, int8_t speed_right) {
-  send_controller_heartbeat(speed_left, speed_right);
 }
 
 /**
