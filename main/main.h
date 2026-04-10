@@ -100,6 +100,10 @@
 #define LEN_CMD                 7
 #define LEN_485                 16
 
+// 将毫秒向上取整为 FreeRTOS tick，避免在 100Hz tick 下出现 pdMS_TO_TICKS(1/2)=0 的忙等。
+#define RTOS_DELAY_TICKS(ms) \
+    ((TickType_t)(((ms) + portTICK_PERIOD_MS - 1U) / portTICK_PERIOD_MS))
+
 // 外部变量声明
 extern uint8_t bk_flag_left;
 extern uint8_t bk_flag_right;

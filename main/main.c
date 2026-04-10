@@ -278,7 +278,6 @@ static void sbus_process_task(void *pvParameters)
     uint8_t sbus_raw_data[LEN_SBUS] = {0};
     uint16_t ch_val[LEN_CHANEL] = {0};
     sbus_data_t sbus_data;
-    uint32_t wdt_feed_counter = 0;  // 喂狗计数器
 
     ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
 
@@ -291,17 +290,10 @@ static void sbus_process_task(void *pvParameters)
     }
 
     while (1) {
-        // 🐕 每50次循环喂狗一次（约10秒，因为每次等待200ms）
-        wdt_feed_counter++;
-        if (wdt_feed_counter >= 50) {
-            esp_task_wdt_reset();
-            wdt_feed_counter = 0;
-        }
+        BaseType_t sbus_ready = sbus_wait_data_ready(pdMS_TO_TICKS(200));
+        esp_task_wdt_reset();
 
-        if (sbus_wait_data_ready(pdMS_TO_TICKS(200)) == pdTRUE) {
-            // 🐕 收到数据时立即喂狗
-            esp_task_wdt_reset();
-            wdt_feed_counter = 0;
+        if (sbus_ready == pdTRUE) {
 
             // 检查SBUS数据
             if (!sbus_get_data(sbus_raw_data)) {
@@ -328,7 +320,7 @@ static void sbus_process_task(void *pvParameters)
                 // SBUS队列已满，覆盖旧数据
             }
         } else {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            vTaskDelay(RTOS_DELAY_TICKS(1));
         }
     }
 }
@@ -409,7 +401,7 @@ static void cmd_uart_task(void *pvParameters)
 static void motor_control_task(void *pvParameters)
 {
     sbus_data_t sbus_data;
-    const TickType_t control_loop_delay = pdMS_TO_TICKS(1);
+    const TickType_t control_loop_delay = RTOS_DELAY_TICKS(1);
     const TickType_t sbus_failsafe_timeout = pdMS_TO_TICKS(200);
     bool sbus_failsafe_active = false;
 #if ENABLE_CMD_VEL
@@ -1113,7 +1105,14 @@ void app_main(void)
         printf("✅ Task Watchdog initialized (timeout: %ds, panic: %s)\n", 
                TASK_WDT_TIMEOUT_S, TASK_WDT_PANIC_ENABLE ? "enabled" : "disabled");
     } else if (wdt_ret == ESP_ERR_INVALID_STATE) {
-        printf("⚠️ Task Watchdog already initialized\n");
+        printf("⚠️ Task Watchdog already initialized, reconfiguring...\n");
+        wdt_ret = esp_task_wdt_reconfigure(&wdt_config);
+        if (wdt_ret == ESP_OK) {
+            printf("✅ Task Watchdog reconfigured (timeout: %ds, panic: %s)\n",
+                   TASK_WDT_TIMEOUT_S, TASK_WDT_PANIC_ENABLE ? "enabled" : "disabled");
+        } else {
+            printf("❌ Task Watchdog reconfigure failed: %s\n", esp_err_to_name(wdt_ret));
+        }
     } else {
         printf("❌ Task Watchdog init failed: %s\n", esp_err_to_name(wdt_ret));
     }

@@ -33,9 +33,6 @@ static void sbus_uart_task(void *pvParameters)
     // 错误统计（用于诊断）
     static uint32_t header_error_count = 0;
     static uint32_t footer_error_count = 0;
-    // 🐕 喂狗计数器
-    static uint32_t wdt_feed_counter = 0;
-
     ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO22...");
     ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
     ESP_LOGI(TAG, "🔌 Hardware: Connect SBUS signal to GPIO22, GND to GND");
@@ -54,13 +51,6 @@ static void sbus_uart_task(void *pvParameters)
     ESP_LOGI(TAG, "💚 Green LEDs initialized (OFF) - will blink when data received");
 
     while (1) {
-        // 🐕 定期喂狗 - 每500次循环喂狗一次（约5秒）
-        wdt_feed_counter++;
-        if (wdt_feed_counter >= 500) {
-            esp_task_wdt_reset();
-            wdt_feed_counter = 0;
-        }
-
         // 每次循环都打印一次状态（用于调试）
         static uint32_t loop_count = 0;
         static uint32_t last_event_time = 0;
@@ -87,6 +77,7 @@ static void sbus_uart_task(void *pvParameters)
         // GPIO22现在专门用于UART2接收SBUS数据
 
         if (xQueueReceive(sbus_uart_queue, (void *)&event, pdMS_TO_TICKS(10))) {
+            esp_task_wdt_reset();
             last_event_time = xTaskGetTickCount();
             ESP_LOGD(TAG, "📨 UART event received at tick: %" PRIu32, last_event_time);
             if (event.type == UART_DATA) {
@@ -179,6 +170,7 @@ static void sbus_uart_task(void *pvParameters)
                 ESP_LOGD(TAG, "UART event type: %d", event.type);
             }
         } else {
+            esp_task_wdt_reset();
             // 超时，没有接收到UART事件
             // 基于实际SBUS帧接收时间判断超时，而不是基于UART事件队列超时
             if (first_frame_received) {
@@ -221,8 +213,8 @@ static void sbus_uart_task(void *pvParameters)
                 }
             }
 
-            // 让出CPU时间，避免看门狗超时
-            vTaskDelay(pdMS_TO_TICKS(1));
+            // 让出至少一个 tick，避免在 100Hz tick 下变成 vTaskDelay(0) 忙等
+            vTaskDelay(RTOS_DELAY_TICKS(1));
         }
     }
 }

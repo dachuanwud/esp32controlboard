@@ -913,14 +913,14 @@ static void can_task(void *pvParameters) {
     }
 
     if (batch_count > 0) {
-      vTaskDelay(pdMS_TO_TICKS(2));
+      vTaskDelay(RTOS_DELAY_TICKS(2));
       consecutive_empty_loops = 0;
     } else if (!did_work) {
       consecutive_empty_loops++;
       if (consecutive_empty_loops > 10) {
         vTaskDelay(pdMS_TO_TICKS(10));
       } else {
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(RTOS_DELAY_TICKS(2));
       }
     } else {
       consecutive_empty_loops = 0;
