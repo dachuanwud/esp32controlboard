@@ -800,9 +800,13 @@ static void can_send_latest_speed_snapshot(void) {
   int8_t sp_right = latest_speed_right;
 
   uint8_t speed_data_a[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_A, 0, 0, 0, 0};
-  int16_t sp_a = (int16_t)sp_left * 100;
-  speed_data_a[4] = (sp_a >> 8) & 0xFF;
-  speed_data_a[5] = sp_a & 0xFF;
+  // Keep the periodic speed frame layout identical to CMD_SPEED so the driver
+  // decodes both paths consistently.
+  int32_t sp_a = (int32_t)sp_left * 100;
+  speed_data_a[4] = (sp_a >> 24) & 0xFF;
+  speed_data_a[5] = (sp_a >> 16) & 0xFF;
+  speed_data_a[6] = (sp_a >> 8) & 0xFF;
+  speed_data_a[7] = sp_a & 0xFF;
 
   twai_message_t speed_msg_a = {
     .extd = 1,
@@ -814,9 +818,11 @@ static void can_send_latest_speed_snapshot(void) {
   can_send_message(&speed_msg_a);
 
   uint8_t speed_data_b[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_B, 0, 0, 0, 0};
-  int16_t sp_b = (int16_t)sp_right * 100;
-  speed_data_b[4] = (sp_b >> 8) & 0xFF;
-  speed_data_b[5] = sp_b & 0xFF;
+  int32_t sp_b = (int32_t)sp_right * 100;
+  speed_data_b[4] = (sp_b >> 24) & 0xFF;
+  speed_data_b[5] = (sp_b >> 16) & 0xFF;
+  speed_data_b[6] = (sp_b >> 8) & 0xFF;
+  speed_data_b[7] = sp_b & 0xFF;
 
   twai_message_t speed_msg_b = {
     .extd = 1,
