@@ -145,6 +145,121 @@ static void can_update_status_cache(const twai_status_info_t *status_info, uint3
 static void can_send_message(const twai_message_t *message);
 static void can_send_latest_speed_snapshot(void);
 static void can_task(void *pvParameters);
+static void can_mark_driver_uninstalled(void);
+static esp_err_t can_get_driver_status(twai_status_info_t *status_info);
+static esp_err_t can_wait_until_not_recovering(twai_status_info_t *status_info,
+                                               uint32_t timeout_ms);
+static esp_err_t can_try_uninstall_driver(uint32_t recovering_wait_ms);
+static void can_reset_peripheral(uint32_t pre_delay_ms, uint32_t step_delay_ms);
+
+static void can_mark_driver_uninstalled(void) {
+  twai_driver_installed = false;
+  can_last_status_valid = false;
+  can_last_status_time = 0;
+  can_last_state = TWAI_STATE_STOPPED;
+  memset(&can_last_status_info, 0, sizeof(can_last_status_info));
+}
+
+static esp_err_t can_get_driver_status(twai_status_info_t *status_info) {
+  esp_err_t ret = twai_get_status_info(status_info);
+  if (ret == ESP_OK) {
+    twai_driver_installed = true;
+  } else if (ret == ESP_ERR_INVALID_STATE) {
+    can_mark_driver_uninstalled();
+  }
+  return ret;
+}
+
+static esp_err_t can_wait_until_not_recovering(twai_status_info_t *status_info,
+                                               uint32_t timeout_ms) {
+  uint32_t start_tick = xTaskGetTickCount();
+  esp_err_t ret = can_get_driver_status(status_info);
+
+  while (ret == ESP_OK && status_info->state == TWAI_STATE_RECOVERING) {
+    if ((xTaskGetTickCount() - start_tick) >= pdMS_TO_TICKS(timeout_ms)) {
+      return ESP_ERR_TIMEOUT;
+    }
+    vTaskDelay(pdMS_TO_TICKS(CAN_RECOVERY_POLL_INTERVAL_MS));
+    ret = can_get_driver_status(status_info);
+  }
+
+  return ret;
+}
+
+static esp_err_t can_try_uninstall_driver(uint32_t recovering_wait_ms) {
+  twai_status_info_t status_info;
+  esp_err_t ret = can_get_driver_status(&status_info);
+
+  if (ret == ESP_ERR_INVALID_STATE) {
+    return ESP_OK;
+  }
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
+  if (status_info.state == TWAI_STATE_RECOVERING) {
+    ESP_LOGI(TAG, "等待RECOVERING状态结束...");
+    ret = can_wait_until_not_recovering(&status_info, recovering_wait_ms);
+    if (ret == ESP_ERR_TIMEOUT) {
+      ESP_LOGW(TAG, "RECOVERING状态持续未退出，暂不重装驱动");
+      return ESP_ERR_INVALID_STATE;
+    }
+    if (ret == ESP_ERR_INVALID_STATE) {
+      return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+      return ret;
+    }
+    ESP_LOGI(TAG, "等待后TWAI状态: State=%d", (int)status_info.state);
+  }
+
+  if (status_info.state == TWAI_STATE_RUNNING) {
+    ret = twai_stop();
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "twai_stop 失败: %s", esp_err_to_name(ret));
+      return ret;
+    }
+    ESP_LOGI(TAG, "twai_stop 成功");
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    ret = can_get_driver_status(&status_info);
+    if (ret == ESP_ERR_INVALID_STATE) {
+      return ESP_OK;
+    }
+    if (ret != ESP_OK) {
+      return ret;
+    }
+  }
+
+  if (status_info.state == TWAI_STATE_STOPPED ||
+      status_info.state == TWAI_STATE_BUS_OFF) {
+    ret = twai_driver_uninstall();
+    if (ret == ESP_OK) {
+      ESP_LOGI(TAG, "twai_driver_uninstall 成功");
+      can_mark_driver_uninstalled();
+    } else {
+      ESP_LOGW(TAG, "twai_driver_uninstall 失败: %s", esp_err_to_name(ret));
+    }
+    return ret;
+  }
+
+  return ESP_ERR_INVALID_STATE;
+}
+
+static void can_reset_peripheral(uint32_t pre_delay_ms, uint32_t step_delay_ms) {
+  if (pre_delay_ms > 0) {
+    vTaskDelay(pdMS_TO_TICKS(pre_delay_ms));
+  }
+
+  periph_module_disable(PERIPH_TWAI_MODULE);
+  vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+
+  periph_module_reset(PERIPH_TWAI_MODULE);
+  vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+
+  periph_module_enable(PERIPH_TWAI_MODULE);
+  vTaskDelay(pdMS_TO_TICKS(step_delay_ms));
+}
 
 static esp_err_t can_hw_reset_and_reinit(void) {
   esp_err_t ret;
@@ -191,7 +306,7 @@ static esp_err_t can_hw_reset_and_reinit(void) {
   
   // 获取当前状态
   twai_status_info_t status_info;
-  ret = twai_get_status_info(&status_info);
+  ret = can_get_driver_status(&status_info);
   bool status_ok = (ret == ESP_OK);
   
   if (status_ok) {
@@ -200,70 +315,15 @@ static esp_err_t can_hw_reset_and_reinit(void) {
              (unsigned long)status_info.tx_error_counter,
              (unsigned long)status_info.rx_error_counter);
   }
-  
-  // 🔧 关键修复：在RECOVERING状态下，等待其完成或超时
-  if (status_ok && status_info.state == TWAI_STATE_RECOVERING) {
-    ESP_LOGI(TAG, "等待RECOVERING状态结束...");
-    uint32_t wait_start = xTaskGetTickCount();
-    while ((xTaskGetTickCount() - wait_start) < pdMS_TO_TICKS(500)) {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      ret = twai_get_status_info(&status_info);
-      if (ret != ESP_OK || status_info.state != TWAI_STATE_RECOVERING) {
-        break;
-      }
-    }
-    // 再次获取状态
-    ret = twai_get_status_info(&status_info);
-    status_ok = (ret == ESP_OK);
-    if (status_ok) {
-      ESP_LOGI(TAG, "等待后TWAI状态: State=%d", (int)status_info.state);
-    }
+
+  ret = can_try_uninstall_driver(500);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "⚠️ 正常卸载失败，取消本次强制重装: %s", esp_err_to_name(ret));
+    goto fail;
   }
-  
-  // 尝试正常流程：stop -> uninstall
-  if (twai_driver_installed) {
-    // 只有在非RECOVERING状态下才能stop
-    if (!status_ok || status_info.state != TWAI_STATE_RECOVERING) {
-      ret = twai_stop();
-      if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "twai_stop 成功");
-        vTaskDelay(pdMS_TO_TICKS(10));
-        
-        ret = twai_driver_uninstall();
-        if (ret == ESP_OK) {
-          ESP_LOGI(TAG, "twai_driver_uninstall 成功");
-          twai_driver_installed = false;
-        } else {
-          ESP_LOGW(TAG, "twai_driver_uninstall 失败: %s", esp_err_to_name(ret));
-        }
-      } else {
-        ESP_LOGW(TAG, "twai_stop 失败: %s", esp_err_to_name(ret));
-      }
-    }
-  }
-  
-  // 🔧 如果驱动仍然安装着（卸载失败），使用激进方法（但增加延时保护）
-  if (twai_driver_installed) {
-    ESP_LOGW(TAG, "⚠️ 正常卸载失败，尝试强制复位...");
-    
-    // 🛡️ 增加延时，减少对电源的冲击
-    vTaskDelay(pdMS_TO_TICKS(50));
-    
-    // 强制禁用外设时钟，这会使驱动状态无效
-    periph_module_disable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时从50ms到100ms
-    
-    // 复位外设
-    periph_module_reset(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时
-    
-    // 重新启用
-    periph_module_enable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(100));  // 🔧 增加延时
-    
-    // 🔧 关键：此时驱动内部状态已损坏，需要标记为未安装
-    twai_driver_installed = false;
-  }
+
+  // 只在驱动确实卸载后再做外设复位，避免本地标志和IDF内部状态漂移
+  can_reset_peripheral(50, 100);
   
   // 安装驱动
   twai_general_config_t gc =
@@ -273,37 +333,18 @@ static esp_err_t can_hw_reset_and_reinit(void) {
 
   ret = twai_driver_install(&gc, &t_config, &f_config);
   if (ret == ESP_ERR_INVALID_STATE) {
-    // 🔧 驱动认为自己仍然安装着，尝试强制卸载
-    ESP_LOGW(TAG, "驱动状态冲突，尝试强制卸载后重装...");
-    
-    // 再次尝试卸载（可能在复位后状态变了）
-    (void)twai_stop();
-    vTaskDelay(pdMS_TO_TICKS(50));
-    (void)twai_driver_uninstall();
-    vTaskDelay(pdMS_TO_TICKS(50));
-    
-    // 🛡️ 完全复位外设（增加延时保护）
-    vTaskDelay(pdMS_TO_TICKS(100));
-    periph_module_disable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(150));  // 🔧 增加延时
-    periph_module_reset(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(150));
-    periph_module_enable(PERIPH_TWAI_MODULE);
-    vTaskDelay(pdMS_TO_TICKS(150));
-    
+    ESP_LOGW(TAG, "驱动状态冲突，尝试按真实状态清理后重装...");
+    ret = can_try_uninstall_driver(200);
+    if (ret != ESP_OK) {
+      goto fail;
+    }
+    can_reset_peripheral(100, 150);
     ret = twai_driver_install(&gc, &t_config, &f_config);
   }
   
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "安装TWAI驱动失败: %s", esp_err_to_name(ret));
-    consecutive_recovery_failures++;
-    if (consecutive_recovery_failures >= CAN_MAX_RECOVERY_FAILURES) {
-      recovery_pause_until = xTaskGetTickCount() + pdMS_TO_TICKS(CAN_RECOVERY_PAUSE_MS);
-      ESP_LOGE(TAG, "🛑 CAN恢复连续失败%lu次，暂停恢复%d秒",
-               (unsigned long)consecutive_recovery_failures,
-               CAN_RECOVERY_PAUSE_MS / 1000);
-    }
-    return ret;
+    goto fail;
   }
   
   twai_driver_installed = true;
@@ -323,6 +364,16 @@ static esp_err_t can_hw_reset_and_reinit(void) {
                (unsigned long)consecutive_recovery_failures,
                CAN_RECOVERY_PAUSE_MS / 1000);
     }
+  }
+  return ret;
+
+fail:
+  consecutive_recovery_failures++;
+  if (consecutive_recovery_failures >= CAN_MAX_RECOVERY_FAILURES) {
+    recovery_pause_until = xTaskGetTickCount() + pdMS_TO_TICKS(CAN_RECOVERY_PAUSE_MS);
+    ESP_LOGE(TAG, "🛑 CAN恢复连续失败%lu次，暂停恢复%d秒",
+             (unsigned long)consecutive_recovery_failures,
+             CAN_RECOVERY_PAUSE_MS / 1000);
   }
   return ret;
 }
@@ -426,13 +477,14 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
       return can_hw_reset_and_reinit();
     }
     
-    // 🆕 优化：使用迭代次数限制代替纯时间循环，防止长时间阻塞
+    // RECOVERING 完成后，TWAI会回到 STOPPED，后续再统一执行 twai_start()
     iteration_count = 0;
-    while (iteration_count < CAN_MAX_RECOVERY_ITERATIONS) {
-      // 🆕 检查总超时
+    while (1) {
       uint32_t elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
       if (elapsed_ms >= CAN_RECOVERY_TOTAL_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "⏱️ CAN恢复总超时(%lums)，直接硬复位", (unsigned long)elapsed_ms);
+        ESP_LOGW(TAG, "⏱️ CAN恢复总超时(%lums, 轮询%lu次)，直接硬复位",
+                 (unsigned long)elapsed_ms,
+                 (unsigned long)iteration_count);
         return can_hw_reset_and_reinit();
       }
       
@@ -446,10 +498,6 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
         break;
       }
     }
-    if (status_info.state == TWAI_STATE_RECOVERING) {
-      ESP_LOGW(TAG, "⏱️ RECOVERING状态等待超时(迭代%lu次)，硬复位", (unsigned long)iteration_count);
-      return can_hw_reset_and_reinit();
-    }
   }
 
   // BUS-OFF 需要先发起恢复
@@ -462,15 +510,20 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
     }
     
     ESP_LOGI(TAG, "Initiating TWAI bus recovery...");
-    twai_initiate_recovery();
+    ret = twai_initiate_recovery();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+      ESP_LOGW(TAG, "twai_initiate_recovery 失败: %s", esp_err_to_name(ret));
+      return can_hw_reset_and_reinit();
+    }
     
-    // 🆕 优化：使用迭代次数限制
+    // 等待 BUS_OFF -> RECOVERING -> STOPPED/RUNNING，避免过早硬复位
     iteration_count = 0;
-    while (iteration_count < CAN_MAX_RECOVERY_ITERATIONS) {
-      // 🆕 检查总超时
+    while (1) {
       elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
       if (elapsed_ms >= CAN_RECOVERY_TOTAL_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "⏱️ BUS-OFF恢复超时(%lums)，直接硬复位", (unsigned long)elapsed_ms);
+        ESP_LOGW(TAG, "⏱️ BUS-OFF恢复超时(%lums, 轮询%lu次)，直接硬复位",
+                 (unsigned long)elapsed_ms,
+                 (unsigned long)iteration_count);
         return can_hw_reset_and_reinit();
       }
       
@@ -484,11 +537,6 @@ static esp_err_t can_bus_recovery_ex(bool force_recovery) {
           status_info.state == TWAI_STATE_RUNNING) {
         break;
       }
-    }
-    if (status_info.state == TWAI_STATE_RECOVERING ||
-        status_info.state == TWAI_STATE_BUS_OFF) {
-      ESP_LOGW(TAG, "⏱️ BUS-OFF恢复未完成(迭代%lu次)，硬复位", (unsigned long)iteration_count);
-      return can_hw_reset_and_reinit();
     }
   }
 
@@ -1013,10 +1061,16 @@ esp_err_t drv_keyadouble_init(void) {
 
   esp_err_t ret = ESP_OK;
   for (int attempt = 1; attempt <= CAN_INIT_MAX_RETRIES; attempt++) {
-    if (twai_driver_installed) {
-      twai_stop();
-      twai_driver_uninstall();
-      twai_driver_installed = false;
+    if (twai_driver_installed || twai_get_status_info(&can_last_status_info) == ESP_OK) {
+      ret = can_try_uninstall_driver(200);
+      if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "CAN pre-init cleanup failed (%d/%d): %s",
+                 attempt, CAN_INIT_MAX_RETRIES, esp_err_to_name(ret));
+        if (attempt < CAN_INIT_MAX_RETRIES) {
+          vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RETRY_DELAY_MS));
+        }
+        continue;
+      }
     }
 
     periph_module_reset(PERIPH_TWAI_MODULE);
@@ -1040,8 +1094,7 @@ esp_err_t drv_keyadouble_init(void) {
 
     ESP_LOGW(TAG, "CAN start failed (%d/%d): %s",
              attempt, CAN_INIT_MAX_RETRIES, esp_err_to_name(ret));
-    twai_driver_uninstall();
-    twai_driver_installed = false;
+    (void)can_try_uninstall_driver(50);
 
     if (attempt < CAN_INIT_MAX_RETRIES) {
       vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RETRY_DELAY_MS));
@@ -1059,9 +1112,7 @@ esp_err_t drv_keyadouble_init(void) {
   can_tx_queue = xQueueCreate(CAN_TX_QUEUE_LEN, sizeof(can_tx_item_t));
   if (can_tx_queue == NULL) {
     ESP_LOGE(TAG, "Failed to create CAN TX queue");
-    twai_stop();
-    twai_driver_uninstall();
-    twai_driver_installed = false;
+    (void)can_try_uninstall_driver(50);
     return ESP_ERR_NO_MEM;
   }
 
@@ -1070,9 +1121,7 @@ esp_err_t drv_keyadouble_init(void) {
     ESP_LOGE(TAG, "Failed to create CAN task");
     vQueueDelete(can_tx_queue);
     can_tx_queue = NULL;
-    twai_stop();
-    twai_driver_uninstall();
-    twai_driver_installed = false;
+    (void)can_try_uninstall_driver(50);
     return ESP_ERR_NO_MEM;
   }
 
