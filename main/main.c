@@ -2,6 +2,7 @@
 #include "channel_parse.h"
 #include "drv_keyadouble.h"
 #include "sbus.h"
+#include "t12d_receiver.h"
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "ota_manager.h"
@@ -277,6 +278,7 @@ static void sbus_process_task(void *pvParameters)
 {
     uint8_t sbus_raw_data[LEN_SBUS] = {0};
     uint16_t ch_val[LEN_CHANEL] = {0};
+    uint16_t adapted_ch_val[LEN_CHANEL] = {0};
     sbus_data_t sbus_data;
 
     ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
@@ -302,14 +304,17 @@ static void sbus_process_task(void *pvParameters)
             // 解析SBUS数据
             parse_sbus_msg(sbus_raw_data, ch_val);
 
+            // 将标准SBUS通道适配为当前项目的 T12D 逻辑通道布局
+            t12d_receiver_apply_mapping(ch_val, LEN_CHANEL, adapted_ch_val, LEN_CHANEL);
+
             // SBUS通道值已在parse_sbus_msg函数中打印，此处不重复打印
 
             // 保存SBUS状态用于Web接口
-            memcpy(g_last_sbus_channels, ch_val, sizeof(ch_val));
+            memcpy(g_last_sbus_channels, adapted_ch_val, sizeof(adapted_ch_val));
             g_last_sbus_update = xTaskGetTickCount();
 
             // 复制通道值到队列数据结构
-            memcpy(sbus_data.channel, ch_val, sizeof(ch_val));
+            memcpy(sbus_data.channel, adapted_ch_val, sizeof(adapted_ch_val));
 
             // 发送到队列，如果队列满则覆盖旧数据
             if (xQueueSend(sbus_queue, &sbus_data, 0) != pdPASS) {

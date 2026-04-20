@@ -2,6 +2,7 @@ idf_component_register(SRCS "ota_manager.c" "http_server.c" "wifi_manager.c" "ma
                        "channel_parse.c"
                        "drv_keyadouble.c"
                        "sbus.c"
+                       "t12d_receiver.c"
                        "cloud_client.c"
                        "data_integration.c"
                        "log_config.c"

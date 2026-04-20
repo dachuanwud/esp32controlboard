@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "channel_parse.h"
 #include "drv_keyadouble.h"
+#include "t12d_receiver.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -98,9 +99,9 @@ static int8_t cal_offset(int8_t v1, int8_t v2)
  * - 通道0 (ch_val[0]): 左右方向控制，右>0
  * - 通道2 (ch_val[2]): 前后方向控制，前>0
  * - 通道3 (ch_val[3]): 备用左右方向控制（单手模式）
- * - 通道4 (ch_val[4]): 遥控使能开关，1050=使能，1500/1950=禁用
- * - 通道6 (ch_val[6]): 单手模式开关，1950时启用
- * - 通道7 (ch_val[7]): 低速模式开关，1950时启用
+ * - 通道4 (ch_val[4]): 遥控使能开关，低档/低位=使能
+ * - 通道6 (ch_val[6]): 单手模式开关，高档/高位=启用
+ * - 通道7 (ch_val[7]): 低速模式开关，高档/高位=启用
  */
 uint8_t parse_chan_val(uint16_t* ch_val)
 {
@@ -124,13 +125,10 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         int8_t sp_fb = chg_val(ch_val[2]); // 前后分量，向前>0
         int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
 
-        // CH4 遥控使能开关：1050=使能，1500/1950=禁用
-        // 使用范围判断（<=1100）而非严格相等，容忍SBUS信号波动（±50）
-        bool current_remote_enabled = (ch_val[4] <= 1100);
-        // CH6 单手模式开关：1950时启用
-        bool current_single_hand = (ch_val[6] == 1950);
-        // CH7 低速模式开关：1950时启用
-        bool current_low_speed = (ch_val[7] == 1950);
+        // T12D 等遥控器的三段开关端点可能存在少量浮动，使用阈值判断更稳妥。
+        bool current_remote_enabled = t12d_receiver_switch_is_low(ch_val[4]);
+        bool current_single_hand = t12d_receiver_switch_is_high(ch_val[6]);
+        bool current_low_speed = t12d_receiver_switch_is_high(ch_val[7]);
 
         if (current_remote_enabled != last_remote_enabled) {
             if (current_remote_enabled) {
