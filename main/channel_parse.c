@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "channel_parse.h"
-#include "drv_keyadouble.h"
+#include "motor_driver.h"
 #include "t12d_receiver.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -12,7 +12,7 @@
 static const char *TAG = "CHAN_PARSE";
 
 // 函数指针，指向实际的电机控制函数
-static uint8_t (*intf_move)(int8_t, int8_t) = intf_move_keyadouble;
+static uint8_t (*intf_move)(int8_t, int8_t) = motor_driver_move;
 
 // 保存上一次的通道值，用于变化检测
 // 初始化为0，表示未接收到有效数据
@@ -125,10 +125,15 @@ uint8_t parse_chan_val(uint16_t* ch_val)
         int8_t sp_fb = chg_val(ch_val[2]); // 前后分量，向前>0
         int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
 
-        // T12D 等遥控器的三段开关端点可能存在少量浮动，使用阈值判断更稳妥。
-        bool current_remote_enabled = t12d_receiver_switch_is_low(ch_val[4]);
+        bool current_remote_enabled = (ch_val[4] <= 1100);
+#if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
+        // T12D 的三段开关端点可能存在少量浮动，使用阈值判断更稳妥。
         bool current_single_hand = t12d_receiver_switch_is_high(ch_val[6]);
         bool current_low_speed = t12d_receiver_switch_is_high(ch_val[7]);
+#else
+        bool current_single_hand = (ch_val[6] == 1950);
+        bool current_low_speed = (ch_val[7] == 1950);
+#endif
 
         if (current_remote_enabled != last_remote_enabled) {
             if (current_remote_enabled) {

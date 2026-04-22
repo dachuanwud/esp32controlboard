@@ -1,4 +1,4 @@
-#include "drv_keyadouble.h"
+#include "drv_sanside.h"
 #include "main.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -6,22 +6,56 @@
 #include "esp_private/periph_ctrl.h"  // 用于外设复位
 #include "esp_task_wdt.h"             // 🐕 任务看门狗
 
-static const char *TAG = "DRV_KEYA";
+static const char *TAG = "DRV_SANSIDE";
 
 // 电机驱动CAN ID定义
-#define DRIVER_ADDRESS 0x01            // 驱动器地址(默认为1)
-#define DRIVER_TX_ID 0x06000000        // 发送基础ID (控制->驱动器)
-#define DRIVER_RX_ID 0x05800000        // 接收基础ID (驱动器->控制)
-#define DRIVER_HEARTBEAT_ID 0x07000000 // 心跳包ID (驱动器->控制)
+#define WEST_DRIVER_DEVICE_ID              0x01U
+#define WEST_DRIVER_TARGET_ADDRESS         0xFFU
+#define WEST_DRIVER_CAN_BASE_ID            0x0DEE0000UL
+#define WEST_DRIVER_CONTROL_ID             (WEST_DRIVER_CAN_BASE_ID | ((uint32_t)WEST_DRIVER_TARGET_ADDRESS << 8) | 0x00U)
+#define WEST_DRIVER_SPEED_FEEDBACK_ID      (WEST_DRIVER_CAN_BASE_ID | ((uint32_t)WEST_DRIVER_DEVICE_ID << 8) | 0x01U)
+#define WEST_DRIVER_CURRENT_FEEDBACK_ID    (WEST_DRIVER_CAN_BASE_ID | ((uint32_t)WEST_DRIVER_DEVICE_ID << 8) | 0x02U)
+#define WEST_DRIVER_STATUS_FEEDBACK_ID     (WEST_DRIVER_CAN_BASE_ID | ((uint32_t)WEST_DRIVER_DEVICE_ID << 8) | 0x03U)
+#define WEST_DRIVER_POSITION_FEEDBACK_ID   (WEST_DRIVER_CAN_BASE_ID | ((uint32_t)WEST_DRIVER_DEVICE_ID << 8) | 0x04U)
+#define WEST_DRIVER_UNLOCK_FRAME_COUNT     10U
+#define WEST_DRIVER_UNLOCK_INTERVAL_MS     10U
+#define WEST_DRIVER_OPEN_LOOP_FULL_SCALE   1100
+#define WEST_DRIVER_FEEDBACK_TIMEOUT_MS    1000U
+#define WEST_DRIVER_BASE_MASK              0xFFFF0000UL
+#define WEST_DRIVER_BASE_PREFIX            0x0DEE0000UL
 
-// 电机通道定义
-#define MOTOR_CHANNEL_A 0x01 // A路电机(左侧)
-#define MOTOR_CHANNEL_B 0x02 // B路电机(右侧)
+typedef struct {
+  int32_t motor1_speed;
+  int32_t motor2_speed;
+  uint32_t timestamp_ms;
+  bool valid;
+} west_speed_feedback_t;
 
-// 命令类型定义
-#define CMD_ENABLE 0x01  // 使能电机
-#define CMD_DISABLE 0x02 // 失能电机
-#define CMD_SPEED 0x03   // 设置速度
+typedef struct {
+  int16_t motor1_current_raw;
+  int16_t motor2_current_raw;
+  int16_t bus_voltage_raw;
+  uint8_t fb_channel_raw;
+  uint8_t lr_channel_raw;
+  uint32_t timestamp_ms;
+  bool valid;
+} west_current_feedback_t;
+
+typedef struct {
+  int16_t temp1_raw;
+  int16_t temp2_raw;
+  uint16_t fault1_bits;
+  uint16_t fault2_bits;
+  uint32_t timestamp_ms;
+  bool valid;
+} west_status_feedback_t;
+
+typedef struct {
+  int32_t motor1_position;
+  int32_t motor2_position;
+  uint32_t timestamp_ms;
+  bool valid;
+} west_position_feedback_t;
 
 // CAN task handle (TX/RX/recovery in one task)
 static TaskHandle_t can_task_handle = NULL;
@@ -60,26 +94,6 @@ static uint32_t last_hw_reset_time = 0;      // 上次硬复位时间
 // 注意：配置结构体在初始化函数中创建，避免静态初始化问题
 #define CAN_MODE TWAI_MODE_NO_ACK  // 改为NO_ACK模式
 static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
-
-// ============================================================================
-// CAN过滤器配置 - 多主控制器架构优化
-// ============================================================================
-// 场景：ESP32与自动导航模块共用CAN总线，都向电机驱动器发送指令
-// 问题：两个控制器发送相同ID(0x0600001)会导致TX/RX错误累积
-// 方案：配置过滤器只接收电机驱动器的反馈消息，忽略其他控制器的消息
-//
-// 电机驱动器反馈ID: 0x05800001 (驱动器->控制器)
-// 心跳包ID:        0x07000001 (驱动器->控制器)
-// 控制指令ID:      0x06000001 (控制器->驱动器) - 不需要接收
-//
-// 过滤器设计：使用双过滤器模式，分别匹配0x058xxxxx和0x070xxxxx
-// 注意：过滤器只减少RX队列压力，TX错误（发送冲突）无法通过过滤器解决
-// ============================================================================
-static const twai_filter_config_t f_config = {
-    .acceptance_code = (0x05800000 << 3),  // 29位扩展帧ID左移3位
-    .acceptance_mask = (0x02FFFFFF << 3),  // 掩码：允许0x05xxxxxx和0x07xxxxxx
-    .single_filter = true
-};
 
 // Software TX queue and CAN task config
 #define CAN_TX_QUEUE_LEN 20  // 🔧 减少队列长度，避免旧命令堆积
@@ -136,17 +150,195 @@ static bool can_last_status_valid = false;
 static uint32_t can_last_status_time = 0;
 static volatile twai_state_t can_last_state = TWAI_STATE_STOPPED;
 static uint32_t can_tx_queue_drop_count = 0;
+static uint8_t west_last_feedback_device_id = 0;
+static uint32_t west_last_feedback_time_ms = 0;
+static bool west_feedback_seen = false;
+static west_speed_feedback_t west_speed_feedback = {0};
+static west_current_feedback_t west_current_feedback = {0};
+static west_status_feedback_t west_status_feedback = {0};
+static west_position_feedback_t west_position_feedback = {0};
 
 static void can_update_status_cache(const twai_status_info_t *status_info, uint32_t now_ms);
 static void can_send_message(const twai_message_t *message);
 static void can_send_latest_speed_snapshot(void);
 static void can_task(void *pvParameters);
+static twai_filter_config_t can_build_filter_config(void);
+static const char *motor_driver_protocol_name(void);
+static bool motor_driver_is_periodic_speed_frame(const twai_message_t *message);
+static void motor_driver_send_startup_frames(void);
+static int32_t west_driver_scale_speed(int8_t speed);
+static void west_driver_fill_speed_frame(twai_message_t *message, int8_t speed_left,
+                                         int8_t speed_right);
+static int16_t west_driver_read_be16(const uint8_t *data);
+static int32_t west_driver_read_be32(const uint8_t *data);
+static uint8_t west_driver_extract_feedback_device_id(uint32_t identifier);
+static uint8_t west_driver_extract_function_code(uint32_t identifier);
+static bool west_driver_is_feedback_frame(const twai_message_t *message);
+static void west_driver_parse_feedback(const twai_message_t *message, uint32_t now_ms);
+static const char *west_driver_fault_summary(uint16_t fault_bits);
 static void can_mark_driver_uninstalled(void);
 static esp_err_t can_get_driver_status(twai_status_info_t *status_info);
 static esp_err_t can_wait_until_not_recovering(twai_status_info_t *status_info,
                                                uint32_t timeout_ms);
 static esp_err_t can_try_uninstall_driver(uint32_t recovering_wait_ms);
 static void can_reset_peripheral(uint32_t pre_delay_ms, uint32_t step_delay_ms);
+
+static twai_filter_config_t can_build_filter_config(void) {
+  twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  return filter;
+}
+
+static const char *motor_driver_protocol_name(void) {
+  return "west-can";
+}
+
+static int16_t west_driver_read_be16(const uint8_t *data) {
+  return (int16_t)(((uint16_t)data[0] << 8) | data[1]);
+}
+
+static int32_t west_driver_read_be32(const uint8_t *data) {
+  return ((int32_t)data[0] << 24) |
+         ((int32_t)data[1] << 16) |
+         ((int32_t)data[2] << 8) |
+         (int32_t)data[3];
+}
+
+static uint8_t west_driver_extract_feedback_device_id(uint32_t identifier) {
+  return (uint8_t)((identifier >> 8) & 0xFFU);
+}
+
+static uint8_t west_driver_extract_function_code(uint32_t identifier) {
+  return (uint8_t)(identifier & 0xFFU);
+}
+
+static bool motor_driver_is_periodic_speed_frame(const twai_message_t *message) {
+  if (message == NULL || message->extd == 0) {
+    return false;
+  }
+
+  return message->identifier == WEST_DRIVER_CONTROL_ID;
+}
+
+static bool west_driver_is_feedback_frame(const twai_message_t *message) {
+  if (message == NULL || message->extd == 0 || message->data_length_code != 8) {
+    return false;
+  }
+  if ((message->identifier & WEST_DRIVER_BASE_MASK) != WEST_DRIVER_BASE_PREFIX) {
+    return false;
+  }
+
+  uint8_t fn = west_driver_extract_function_code(message->identifier);
+  return fn >= 0x01U && fn <= 0x04U;
+}
+
+static void west_driver_parse_feedback(const twai_message_t *message, uint32_t now_ms) {
+  uint8_t device_id;
+  uint8_t fn;
+
+  if (!west_driver_is_feedback_frame(message)) {
+    return;
+  }
+
+  device_id = west_driver_extract_feedback_device_id(message->identifier);
+  fn = west_driver_extract_function_code(message->identifier);
+  west_last_feedback_device_id = device_id;
+  west_last_feedback_time_ms = now_ms;
+  west_feedback_seen = true;
+
+  switch (fn) {
+    case 0x01:
+      west_speed_feedback.motor1_speed = west_driver_read_be32(&message->data[0]);
+      west_speed_feedback.motor2_speed = west_driver_read_be32(&message->data[4]);
+      west_speed_feedback.timestamp_ms = now_ms;
+      west_speed_feedback.valid = true;
+      break;
+    case 0x02:
+      west_current_feedback.motor1_current_raw = west_driver_read_be16(&message->data[0]);
+      west_current_feedback.motor2_current_raw = west_driver_read_be16(&message->data[2]);
+      west_current_feedback.bus_voltage_raw = west_driver_read_be16(&message->data[4]);
+      west_current_feedback.fb_channel_raw = message->data[6];
+      west_current_feedback.lr_channel_raw = message->data[7];
+      west_current_feedback.timestamp_ms = now_ms;
+      west_current_feedback.valid = true;
+      break;
+    case 0x03:
+      west_status_feedback.temp1_raw = west_driver_read_be16(&message->data[0]);
+      west_status_feedback.temp2_raw = west_driver_read_be16(&message->data[2]);
+      west_status_feedback.fault1_bits = (uint16_t)west_driver_read_be16(&message->data[4]);
+      west_status_feedback.fault2_bits = (uint16_t)west_driver_read_be16(&message->data[6]);
+      west_status_feedback.timestamp_ms = now_ms;
+      west_status_feedback.valid = true;
+      break;
+    case 0x04:
+      west_position_feedback.motor1_position = west_driver_read_be32(&message->data[0]);
+      west_position_feedback.motor2_position = west_driver_read_be32(&message->data[4]);
+      west_position_feedback.timestamp_ms = now_ms;
+      west_position_feedback.valid = true;
+      break;
+    default:
+      break;
+  }
+}
+
+static const char *west_driver_fault_summary(uint16_t fault_bits) {
+  if (fault_bits & (1U << 0)) return "current";
+  if (fault_bits & (1U << 1)) return "load";
+  if (fault_bits & (1U << 2)) return "temp";
+  if (fault_bits & (1U << 3)) return "over-voltage";
+  if (fault_bits & (1U << 4)) return "under-voltage";
+  if (fault_bits & (1U << 5)) return "stall";
+  if (fault_bits & (1U << 6)) return "hall";
+  if (fault_bits & (1U << 7)) return "shake";
+  return "ok";
+}
+
+static int32_t west_driver_scale_speed(int8_t speed) {
+  int32_t scaled = ((int32_t)speed * WEST_DRIVER_OPEN_LOOP_FULL_SCALE) / 100;
+
+  if (scaled > WEST_DRIVER_OPEN_LOOP_FULL_SCALE) {
+    scaled = WEST_DRIVER_OPEN_LOOP_FULL_SCALE;
+  }
+  if (scaled < -WEST_DRIVER_OPEN_LOOP_FULL_SCALE) {
+    scaled = -WEST_DRIVER_OPEN_LOOP_FULL_SCALE;
+  }
+  return scaled;
+}
+
+static void west_driver_fill_speed_frame(twai_message_t *message, int8_t speed_left,
+                                         int8_t speed_right) {
+  int32_t left = west_driver_scale_speed(speed_left);
+  int32_t right = west_driver_scale_speed(speed_right);
+
+  memset(message, 0, sizeof(*message));
+  message->extd = 1;
+  message->identifier = WEST_DRIVER_CONTROL_ID;
+  message->data_length_code = 8;
+  message->rtr = 0;
+  message->data[0] = (left >> 24) & 0xFF;
+  message->data[1] = (left >> 16) & 0xFF;
+  message->data[2] = (left >> 8) & 0xFF;
+  message->data[3] = left & 0xFF;
+  message->data[4] = (right >> 24) & 0xFF;
+  message->data[5] = (right >> 16) & 0xFF;
+  message->data[6] = (right >> 8) & 0xFF;
+  message->data[7] = right & 0xFF;
+}
+
+static void motor_driver_send_startup_frames(void) {
+  twai_message_t zero_frame;
+
+  west_driver_fill_speed_frame(&zero_frame, 0, 0);
+  for (uint32_t i = 0; i < WEST_DRIVER_UNLOCK_FRAME_COUNT; ++i) {
+    esp_err_t ret = twai_transmit(&zero_frame, 0);
+    if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
+      ESP_LOGW(TAG, "三思德驱动零速解锁帧发送失败(%lu/%u): %s",
+               (unsigned long)(i + 1), WEST_DRIVER_UNLOCK_FRAME_COUNT,
+               esp_err_to_name(ret));
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(WEST_DRIVER_UNLOCK_INTERVAL_MS));
+  }
+}
 
 static void can_mark_driver_uninstalled(void) {
   twai_driver_installed = false;
@@ -324,10 +516,11 @@ static esp_err_t can_hw_reset_and_reinit(void) {
   // 安装驱动
   twai_general_config_t gc =
       TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_16, GPIO_NUM_17, CAN_MODE);
+  twai_filter_config_t fc = can_build_filter_config();
   gc.tx_queue_len = 20;
   gc.rx_queue_len = 50;
 
-  ret = twai_driver_install(&gc, &t_config, &f_config);
+  ret = twai_driver_install(&gc, &t_config, &fc);
   if (ret == ESP_ERR_INVALID_STATE) {
     ESP_LOGW(TAG, "驱动状态冲突，尝试按真实状态清理后重装...");
     ret = can_try_uninstall_driver(200);
@@ -335,7 +528,7 @@ static esp_err_t can_hw_reset_and_reinit(void) {
       goto fail;
     }
     can_reset_peripheral(100, 150);
-    ret = twai_driver_install(&gc, &t_config, &f_config);
+    ret = twai_driver_install(&gc, &t_config, &fc);
   }
   
   if (ret != ESP_OK) {
@@ -350,6 +543,7 @@ static esp_err_t can_hw_reset_and_reinit(void) {
     can_recovery_count++;
     consecutive_tx_failures = 0;
     consecutive_recovery_failures = 0;  // 🔧 恢复成功，重置失败计数
+    motor_driver_send_startup_frames();
     ESP_LOGI(TAG, "✅ TWAI硬复位恢复成功 (总次数:%lu)", (unsigned long)can_recovery_count);
   } else {
     ESP_LOGE(TAG, "硬复位后启动TWAI失败: %s", esp_err_to_name(ret));
@@ -809,9 +1003,7 @@ static void can_send_message(const twai_message_t *message) {
                    tx_message.data[4], tx_message.data[5], tx_message.data[6], tx_message.data[7]);
         }
       }
-      bool is_speed_cmd =
-          (tx_message.data[0] == 0x23 && tx_message.data[1] == 0x00 &&
-           tx_message.data[2] == 0x20);
+      bool is_speed_cmd = motor_driver_is_periodic_speed_frame(&tx_message);
       if (is_speed_cmd) {
         twai_transmit(&tx_message, 0);
       }
@@ -843,39 +1035,9 @@ static void can_send_latest_speed_snapshot(void) {
   int8_t sp_left = latest_speed_left;
   int8_t sp_right = latest_speed_right;
 
-  uint8_t speed_data_a[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_A, 0, 0, 0, 0};
-  // Keep the periodic speed frame layout identical to CMD_SPEED so the driver
-  // decodes both paths consistently.
-  int32_t sp_a = (int32_t)sp_left * 100;
-  speed_data_a[4] = (sp_a >> 24) & 0xFF;
-  speed_data_a[5] = (sp_a >> 16) & 0xFF;
-  speed_data_a[6] = (sp_a >> 8) & 0xFF;
-  speed_data_a[7] = sp_a & 0xFF;
-
-  twai_message_t speed_msg_a = {
-    .extd = 1,
-    .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
-    .data_length_code = 8,
-    .rtr = 0
-  };
-  memcpy(speed_msg_a.data, speed_data_a, 8);
-  can_send_message(&speed_msg_a);
-
-  uint8_t speed_data_b[8] = {0x23, 0x00, 0x20, MOTOR_CHANNEL_B, 0, 0, 0, 0};
-  int32_t sp_b = (int32_t)sp_right * 100;
-  speed_data_b[4] = (sp_b >> 24) & 0xFF;
-  speed_data_b[5] = (sp_b >> 16) & 0xFF;
-  speed_data_b[6] = (sp_b >> 8) & 0xFF;
-  speed_data_b[7] = sp_b & 0xFF;
-
-  twai_message_t speed_msg_b = {
-    .extd = 1,
-    .identifier = DRIVER_TX_ID + DRIVER_ADDRESS,
-    .data_length_code = 8,
-    .rtr = 0
-  };
-  memcpy(speed_msg_b.data, speed_data_b, 8);
-  can_send_message(&speed_msg_b);
+  twai_message_t speed_msg;
+  west_driver_fill_speed_frame(&speed_msg, sp_left, sp_right);
+  can_send_message(&speed_msg);
 }
 
 /**
@@ -952,6 +1114,20 @@ static void can_task(void *pvParameters) {
         rx_count++;
         batch_count++;
         did_work = true;
+        west_driver_parse_feedback(&rx_message, now_ms);
+#if ENABLE_CAN_DEBUG
+        if (west_driver_is_feedback_frame(&rx_message) &&
+            west_driver_extract_feedback_device_id(rx_message.identifier) !=
+                WEST_DRIVER_DEVICE_ID) {
+          static uint32_t last_addr_warn_ms = 0;
+          if (now_ms - last_addr_warn_ms > 2000) {
+            last_addr_warn_ms = now_ms;
+            ESP_LOGW(TAG, "⚠️ 收到三思德反馈但设备地址不是期望值: got=0x%02X expect=0x%02X",
+                     west_driver_extract_feedback_device_id(rx_message.identifier),
+                     WEST_DRIVER_DEVICE_ID);
+          }
+        }
+#endif
         ESP_LOGD(TAG, "CAN RX #%lu: ID=0x%08" PRIX32 "...",
                  (unsigned long)rx_count, rx_message.identifier);
       } else if (ret == ESP_ERR_TIMEOUT) {
@@ -1017,40 +1193,18 @@ static void keya_send_data(uint32_t id, uint8_t *data) {
  * 电机控制
  */
 static void motor_control(uint8_t cmd_type, uint8_t channel, int8_t speed) {
-  uint8_t tx_data[8] = {0};
-  uint32_t tx_id = DRIVER_TX_ID + DRIVER_ADDRESS;
-
-  if (cmd_type == CMD_ENABLE) {
-    tx_data[0] = 0x23;
-    tx_data[1] = 0x0D;
-    tx_data[2] = 0x20;
-    tx_data[3] = channel;
-  } else if (cmd_type == CMD_DISABLE) {
-    tx_data[0] = 0x23;
-    tx_data[1] = 0x0C;
-    tx_data[2] = 0x20;
-    tx_data[3] = channel;
-  } else if (cmd_type == CMD_SPEED) {
-    tx_data[0] = 0x23;
-    tx_data[1] = 0x00;
-    tx_data[2] = 0x20;
-    tx_data[3] = channel;
-    int32_t sp_value = (int32_t)speed * 100;
-    tx_data[4] = (sp_value >> 24) & 0xFF;
-    tx_data[5] = (sp_value >> 16) & 0xFF;
-    tx_data[6] = (sp_value >> 8) & 0xFF;
-    tx_data[7] = sp_value & 0xFF;
-  }
-
-  keya_send_data(tx_id, tx_data);
+  (void)cmd_type;
+  (void)channel;
+  (void)speed;
 }
 
 /**
  * 初始化电机驱动
  */
-esp_err_t drv_keyadouble_init(void) {
+esp_err_t drv_sanside_init(void) {
   twai_general_config_t g_config =
       TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_16, GPIO_NUM_17, CAN_MODE);
+  twai_filter_config_t f_config = can_build_filter_config();
 
   g_config.tx_queue_len = 20;
   g_config.rx_queue_len = 50;
@@ -1104,6 +1258,7 @@ esp_err_t drv_keyadouble_init(void) {
   }
 
   vTaskDelay(pdMS_TO_TICKS(100));
+  motor_driver_send_startup_frames();
 
   can_tx_queue = xQueueCreate(CAN_TX_QUEUE_LEN, sizeof(can_tx_item_t));
   if (can_tx_queue == NULL) {
@@ -1141,6 +1296,7 @@ esp_err_t drv_keyadouble_init(void) {
 #endif
   ESP_LOGI(TAG, "Motor driver initialized (%s, CAN task prio %d)",
            mode_str, CAN_TASK_PRIORITY);
+  ESP_LOGI(TAG, "Driver protocol: %s", motor_driver_protocol_name());
   ESP_LOGI(TAG, "CAN config: TX_Q=%d, RX_Q=%d, SW_TX_Q=%d, 250kbps, GPIO16/17",
            g_config.tx_queue_len, g_config.rx_queue_len, CAN_TX_QUEUE_LEN);
   return ESP_OK;
@@ -1149,7 +1305,9 @@ esp_err_t drv_keyadouble_init(void) {
 /**
  * 打印CAN诊断信息（可从外部调用）
  */
-void drv_keyadouble_print_diag(void) {
+void drv_sanside_print_diag(void) {
+  uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
   if (!can_last_status_valid) {
     ESP_LOGW(TAG, "CAN status not ready");
     return;
@@ -1183,29 +1341,67 @@ void drv_keyadouble_print_diag(void) {
            (unsigned long)can_tx_error_count);
   ESP_LOGI(TAG, "TX queue drops: %lu", (unsigned long)can_tx_queue_drop_count);
   ESP_LOGI(TAG, "恢复次数: %lu", (unsigned long)can_recovery_count);
+  if (!west_feedback_seen) {
+    ESP_LOGW(TAG, "三思德反馈: 尚未收到 01/02/03/04 返回帧，可能是地址不匹配或驱动未按协议回传");
+  } else {
+    uint32_t age_ms = now_ms - west_last_feedback_time_ms;
+    ESP_LOGI(TAG, "三思德反馈: device_id=0x%02X age=%lums %s",
+             west_last_feedback_device_id,
+             (unsigned long)age_ms,
+             west_last_feedback_device_id == WEST_DRIVER_DEVICE_ID ? "(address ok)" : "(address mismatch?)");
+    if (age_ms > WEST_DRIVER_FEEDBACK_TIMEOUT_MS) {
+      ESP_LOGW(TAG, "三思德反馈超时: 超过%ums未收到新反馈", WEST_DRIVER_FEEDBACK_TIMEOUT_MS);
+    }
+  }
+
+  if (west_speed_feedback.valid) {
+    ESP_LOGI(TAG, "反馈01 速度: M1=%" PRId32 " M2=%" PRId32 " age=%lums",
+             west_speed_feedback.motor1_speed,
+             west_speed_feedback.motor2_speed,
+             (unsigned long)(now_ms - west_speed_feedback.timestamp_ms));
+  }
+  if (west_current_feedback.valid) {
+    ESP_LOGI(TAG, "反馈02 电流/电压: I1=%.1f I2=%.1f Vbus=%.1f FB=%u LR=%u age=%lums",
+             west_current_feedback.motor1_current_raw / 10.0f,
+             west_current_feedback.motor2_current_raw / 10.0f,
+             west_current_feedback.bus_voltage_raw / 10.0f,
+             west_current_feedback.fb_channel_raw,
+             west_current_feedback.lr_channel_raw,
+             (unsigned long)(now_ms - west_current_feedback.timestamp_ms));
+  }
+  if (west_status_feedback.valid) {
+    ESP_LOGI(TAG, "反馈03 温度/故障: T1=%.1f T2=%.1f F1=0x%04X(%s) F2=0x%04X(%s) age=%lums",
+             west_status_feedback.temp1_raw / 10.0f,
+             west_status_feedback.temp2_raw / 10.0f,
+             west_status_feedback.fault1_bits,
+             west_driver_fault_summary(west_status_feedback.fault1_bits),
+             west_status_feedback.fault2_bits,
+             west_driver_fault_summary(west_status_feedback.fault2_bits),
+             (unsigned long)(now_ms - west_status_feedback.timestamp_ms));
+  }
+  if (west_position_feedback.valid) {
+    ESP_LOGI(TAG, "反馈04 位置: M1=%" PRId32 " M2=%" PRId32 " age=%lums",
+             west_position_feedback.motor1_position,
+             west_position_feedback.motor2_position,
+             (unsigned long)(now_ms - west_position_feedback.timestamp_ms));
+  }
   ESP_LOGI(TAG, "═══════════════════════════════════════════");
 }
 
-// 🔧 电机使能状态跟踪（用于减少CAN消息数量）
-static bool motor_a_enabled = false;
-static bool motor_b_enabled = false;
 static int8_t last_speed_left = 0;
 static int8_t last_speed_right = 0;
-static uint32_t last_enable_time = 0;
-#define ENABLE_RESEND_INTERVAL_MS 5000  // 每5秒重发一次使能命令（保活）
 
 /**
  * 设置左右电机速度实现运动
- * 🔧 优化：只在首次/状态变化/定时保活时发送使能命令，减少CAN流量
+ * 三思德驱动通过单帧双电机速度命令控制，无需额外使能帧。
  */
-uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
+uint8_t intf_move_sanside(int8_t speed_left, int8_t speed_right) {
   if ((abs(speed_left) > 100) || (abs(speed_right) > 100))
     return 1;
 
   bk_flag_left = (speed_left != 0) ? 1 : 0;
   bk_flag_right = (speed_right != 0) ? 1 : 0;
 
-  // 🔧 仅记录非RUNNING状态，恢复交给发送逻辑处理
   if (can_last_status_valid && can_last_state != TWAI_STATE_RUNNING) {
     static uint32_t last_non_running_warn = 0;
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -1213,68 +1409,17 @@ uint8_t intf_move_keyadouble(int8_t speed_left, int8_t speed_right) {
       ESP_LOGW(TAG, "⚠️ CAN状态异常: State=%d", (int)can_last_state);
       last_non_running_warn = now;
     }
-    // CAN异常时重置使能状态，下次恢复后需要重新使能
-    motor_a_enabled = false;
-    motor_b_enabled = false;
   }
 
-  uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-  
-  // 🔧 检查是否需要发送使能命令
-  bool need_enable_a = false;
-  bool need_enable_b = false;
-  
-  // 条件1：首次使能（电机从停止到运动）
-  if (speed_left != 0 && !motor_a_enabled) {
-    need_enable_a = true;
-  }
-  if (speed_right != 0 && !motor_b_enabled) {
-    need_enable_b = true;
-  }
-  
-  // 条件2：定时保活（每5秒重发使能命令，防止驱动器看门狗超时）
-  if (current_time - last_enable_time > ENABLE_RESEND_INTERVAL_MS) {
-    if (speed_left != 0 || speed_right != 0) {
-      need_enable_a = true;
-      need_enable_b = true;
-    }
-    last_enable_time = current_time;
-  }
-
-  // 🔍 调试：只在速度变化时打印（减少日志）
   if (speed_left != last_speed_left || speed_right != last_speed_right) {
     ESP_LOGI(TAG, "🚗 电机命令: Left=%d Right=%d", speed_left, speed_right);
     last_speed_left = speed_left;
     last_speed_right = speed_right;
   }
 
-  // 🔧 只更新最新速度值，不直接发送到队列
-  // CAN task 会周期性读取并发送最新值，避免队列堆积旧命令
   latest_speed_left = speed_left;
   latest_speed_right = speed_right;
   speed_cmd_pending = true;
-
-  // 🔧 条件发送使能命令（通过队列，优先级较低）
-  if (need_enable_a) {
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_A, 0);
-    motor_a_enabled = true;
-    ESP_LOGD(TAG, "📤 发送A路使能命令");
-  }
-  if (need_enable_b) {
-    motor_control(CMD_ENABLE, MOTOR_CHANNEL_B, 0);
-    motor_b_enabled = true;
-    ESP_LOGD(TAG, "📤 发送B路使能命令");
-  }
-
-  // 🔧 注意：速度命令不再这里发送，改由 CAN task 周期性发送最新值
-
-  // 更新使能状态（速度为0时标记为未使能，下次非零时重新使能）
-  if (speed_left == 0) {
-    motor_a_enabled = false;
-  }
-  if (speed_right == 0) {
-    motor_b_enabled = false;
-  }
 
   return 0;
 }

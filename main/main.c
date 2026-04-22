@@ -1,6 +1,6 @@
 #include "main.h"
 #include "channel_parse.h"
-#include "drv_keyadouble.h"
+#include "motor_driver.h"
 #include "sbus.h"
 #include "t12d_receiver.h"
 #include "wifi_manager.h"
@@ -282,6 +282,11 @@ static void sbus_process_task(void *pvParameters)
     sbus_data_t sbus_data;
 
     ESP_LOGI(TAG, "SBUS处理任务已启动（持续等待SBUS数据）");
+#if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
+    ESP_LOGI(TAG, "遥控器输入方案: T12D");
+#else
+    ESP_LOGI(TAG, "遥控器输入方案: 原有云卓/默认SBUS");
+#endif
 
     // 🐕 订阅任务看门狗监控
     esp_err_t wdt_ret = esp_task_wdt_add(NULL);
@@ -304,8 +309,13 @@ static void sbus_process_task(void *pvParameters)
             // 解析SBUS数据
             parse_sbus_msg(sbus_raw_data, ch_val);
 
+            // 根据编译配置选择遥控器输入方案，默认保持原有云卓方案不变。
+#if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
             // 将标准SBUS通道适配为当前项目的 T12D 逻辑通道布局
             t12d_receiver_apply_mapping(ch_val, LEN_CHANEL, adapted_ch_val, LEN_CHANEL);
+#else
+            memcpy(adapted_ch_val, ch_val, sizeof(ch_val));
+#endif
 
             // SBUS通道值已在parse_sbus_msg函数中打印，此处不重复打印
 
@@ -1220,7 +1230,7 @@ void app_main(void)
 
     // 初始化电机驱动
     printf("Initializing motor driver...\n");
-    drv_keyadouble_init();
+    motor_driver_init();
     printf("Motor driver initialized OK\n");
     printf("Free heap after motor: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 

@@ -37,6 +37,20 @@
 #define ENABLE_CAN_DEBUG        1   // 启用CAN发送/状态调试打印
 #define ENABLE_CMD_VEL          0   // 禁用CMD_VEL UART接收与任务
 
+// 遥控器输入方案选择
+// 1: 原有云卓/默认SBUS通道方案
+// 2: T12D 遥控器方案
+#define REMOTE_INPUT_PROFILE_YUNZHUO   1
+#define REMOTE_INPUT_PROFILE_T12D      2
+#define REMOTE_INPUT_PROFILE           REMOTE_INPUT_PROFILE_T12D
+
+// 电机驱动协议选择
+// 1: 历史双路驱动(SDO/寄存器写命令)
+// 2: 三思德双路无刷驱动(扩展帧 0x0DEEFF00 双电机控制)
+#define MOTOR_DRIVER_PROTOCOL_KEYA_SDO   1
+#define MOTOR_DRIVER_PROTOCOL_WEST_CAN   2
+#define MOTOR_DRIVER_PROTOCOL            MOTOR_DRIVER_PROTOCOL_WEST_CAN
+
 // CMD_VEL功能开关 - 设置为0禁用UART1 CMD_VEL接收
 #define ENABLE_CMD_VEL          0   // 禁用CMD_VEL功能（节省UART1资源）
 
