@@ -5,7 +5,7 @@ CAN通信模块是ESP32控制板项目的核心输出模块，负责通过CAN总
 ## 🎯 模块概述
 
 ### 功能特性
-- 🚗 **标准CAN协议支持**: 250kbps, 扩展帧格式
+- 🚗 **标准CAN协议支持**: 500kbps, 扩展帧格式
 - ⚡ **非阻塞发送**: 零延迟CAN发送，延迟<1ms
 - 🎯 **智能使能管理**: 首次使能后仅发送速度命令，减少50%帧数
 - 📊 **双通道控制**: 支持左右两个电机的独立控制
@@ -81,7 +81,7 @@ esp_err_t drv_keyadouble_init(void)
     // TWAI (CAN) 配置
     static const twai_general_config_t g_config =
         TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_16, GPIO_NUM_17, TWAI_MODE_NORMAL);
-    static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
+    static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
     static const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     // 安装并启动CAN驱动
