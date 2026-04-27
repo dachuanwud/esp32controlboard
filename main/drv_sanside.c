@@ -93,7 +93,7 @@ static uint32_t last_hw_reset_time = 0;      // 上次硬复位时间
 // 使用NO_ACK模式，不等待ACK应答，避免错误计数器累积
 // 注意：配置结构体在初始化函数中创建，避免静态初始化问题
 #define CAN_MODE TWAI_MODE_NO_ACK  // 改为NO_ACK模式
-static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
+static const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
 
 // Software TX queue and CAN task config
 #define CAN_TX_QUEUE_LEN 20  // 🔧 减少队列长度，避免旧命令堆积
@@ -306,6 +306,12 @@ static int32_t west_driver_scale_speed(int8_t speed) {
 
 static void west_driver_fill_speed_frame(twai_message_t *message, int8_t speed_left,
                                          int8_t speed_right) {
+#if WEST_CAN_INVERT_LEFT_MOTOR
+  speed_left = -speed_left;
+#endif
+#if WEST_CAN_INVERT_RIGHT_MOTOR
+  speed_right = -speed_right;
+#endif
   int32_t left = west_driver_scale_speed(speed_left);
   int32_t right = west_driver_scale_speed(speed_right);
 
@@ -794,7 +800,7 @@ static uint32_t can_tx_success_count = 0;
 static uint32_t can_tx_timeout_count = 0;
 static uint32_t can_tx_error_count = 0;
 static uint32_t last_status_print_time = 0;
-#define CAN_STATUS_PRINT_INTERVAL_MS 10000 // 每10秒打印一次状态
+#define CAN_STATUS_PRINT_INTERVAL_MS 30000 // 每30秒打印一次状态
 #if ENABLE_CAN_DEBUG
 #define CAN_TX_DEBUG_EVERY_N 100  // 每100次发送打印一次
 #define CAN_SKIP_LOG_INTERVAL_MS 500
@@ -1297,7 +1303,7 @@ esp_err_t drv_sanside_init(void) {
   ESP_LOGI(TAG, "Motor driver initialized (%s, CAN task prio %d)",
            mode_str, CAN_TASK_PRIORITY);
   ESP_LOGI(TAG, "Driver protocol: %s", motor_driver_protocol_name());
-  ESP_LOGI(TAG, "CAN config: TX_Q=%d, RX_Q=%d, SW_TX_Q=%d, 250kbps, GPIO16/17",
+  ESP_LOGI(TAG, "CAN config: TX_Q=%d, RX_Q=%d, SW_TX_Q=%d, 500kbps, GPIO16/17",
            g_config.tx_queue_len, g_config.rx_queue_len, CAN_TX_QUEUE_LEN);
   return ESP_OK;
 }
@@ -1399,12 +1405,12 @@ uint8_t intf_move_sanside(int8_t speed_left, int8_t speed_right) {
   if ((abs(speed_left) > 100) || (abs(speed_right) > 100))
     return 1;
 
+  uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
   bk_flag_left = (speed_left != 0) ? 1 : 0;
   bk_flag_right = (speed_right != 0) ? 1 : 0;
 
   if (can_last_status_valid && can_last_state != TWAI_STATE_RUNNING) {
     static uint32_t last_non_running_warn = 0;
-    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
     if (now - last_non_running_warn > 1000) {
       ESP_LOGW(TAG, "⚠️ CAN状态异常: State=%d", (int)can_last_state);
       last_non_running_warn = now;
@@ -1412,9 +1418,20 @@ uint8_t intf_move_sanside(int8_t speed_left, int8_t speed_right) {
   }
 
   if (speed_left != last_speed_left || speed_right != last_speed_right) {
-    ESP_LOGI(TAG, "🚗 电机命令: Left=%d Right=%d", speed_left, speed_right);
-    last_speed_left = speed_left;
-    last_speed_right = speed_right;
+    static uint32_t last_motor_cmd_log_time = 0;
+    bool was_stopped = (last_speed_left == 0 && last_speed_right == 0);
+    bool is_stopped = (speed_left == 0 && speed_right == 0);
+    bool significant_change =
+        abs(speed_left - last_speed_left) >= 10 ||
+        abs(speed_right - last_speed_right) >= 10;
+    bool rate_limited = (now - last_motor_cmd_log_time) >= 1000;
+
+    if (was_stopped != is_stopped || significant_change || rate_limited) {
+      ESP_LOGI(TAG, "🚗 电机命令: Left=%d Right=%d", speed_left, speed_right);
+      last_speed_left = speed_left;
+      last_speed_right = speed_right;
+      last_motor_cmd_log_time = now;
+    }
   }
 
   latest_speed_left = speed_left;

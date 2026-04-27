@@ -44,8 +44,9 @@ void t12d_receiver_get_default_map(t12d_channel_map_t *map)
         return;
     }
 
-    map->steering_channel = T12D_LOGICAL_STEERING_CHANNEL;
-    map->throttle_channel = T12D_LOGICAL_THROTTLE_CHANNEL;
+    // 实际接线/标准绑定：CH1(索引0)作为左右转向，CH3(索引2)作为前后油门
+    map->steering_channel = T12D_LOGICAL_STEERING_CHANNEL;  // 0 → 物理 CH1
+    map->throttle_channel = T12D_LOGICAL_THROTTLE_CHANNEL;  // 2 → 物理 CH3
     map->single_hand_axis_channel = T12D_LOGICAL_SINGLE_HAND_AXIS_CHANNEL;
     map->remote_enable_channel = T12D_LOGICAL_REMOTE_ENABLE_CHANNEL;
     map->single_hand_switch_channel = T12D_LOGICAL_SINGLE_HAND_SWITCH_CHANNEL;

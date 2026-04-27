@@ -1,4 +1,4 @@
-idf_component_register(SRCS "ota_manager.c" "http_server.c" "wifi_manager.c" "main.c"
+idf_component_register(SRCS "drv_payout.c" "ota_manager.c" "http_server.c" "wifi_manager.c" "main.c"
                        "channel_parse.c"
                        "motor_driver.c"
                        "drv_keyadouble.c"

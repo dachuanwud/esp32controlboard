@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include "main.h"
 #include "channel_parse.h"
 #include "motor_driver.h"
 #include "t12d_receiver.h"
+#include "drv_payout.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -33,6 +35,11 @@ void channel_parse_force_stop(const char *reason)
     intf_move(0, 0);
     last_left_speed = 0;
     last_right_speed = 0;
+
+#if ENABLE_PAYOUT_DEVICE
+    // 失能/失步 → 放线设备也强制停止，两路执行机构同步置零
+    drv_payout_stop();
+#endif
 }
 
 /**
@@ -90,26 +97,63 @@ static int8_t cal_offset(int8_t v1, int8_t v2)
     }
 }
 
+#if ENABLE_PAYOUT_DEVICE
+static int8_t payout_direction_sign(uint16_t channel_value)
+{
+    if (t12d_receiver_switch_is_high(channel_value)) {
+        return 1;
+    }
+    if (t12d_receiver_switch_is_low(channel_value)) {
+        return -1;
+    }
+    return 0;
+}
+
+static uint16_t payout_speed_channel_to_signed_value(uint16_t speed_channel_value,
+                                                     int8_t direction_sign)
+{
+    uint16_t clamped = speed_channel_value;
+    uint16_t speed_delta;
+
+    if (clamped < PAYOUT_CHANNEL_MIN) {
+        clamped = PAYOUT_CHANNEL_MIN;
+    } else if (clamped > PAYOUT_CHANNEL_MAX) {
+        clamped = PAYOUT_CHANNEL_MAX;
+    }
+
+    // 方向由 CH7 控制，CH10 仅表示速度大小：
+    // 最小端 = 0 速，最大端 = 满速。
+    speed_delta = (uint16_t)(clamped - PAYOUT_CHANNEL_MIN);
+
+    if (direction_sign > 0) {
+        return (uint16_t)(PAYOUT_CHANNEL_MID + speed_delta);
+    }
+    if (direction_sign < 0) {
+        return (uint16_t)(PAYOUT_CHANNEL_MID - speed_delta);
+    }
+    return PAYOUT_CHANNEL_MID;
+}
+#endif
+
 /**
  * 解析通道值并控制履带车运动
  * 标准SBUS协议：1050~1950映射到-100~100，1500对应0
  * 履带车差速控制：通过左右履带速度差实现转弯
  *
  * 通道分配：
- * - 通道0 (ch_val[0]): 左右方向控制，右>0
- * - 通道2 (ch_val[2]): 前后方向控制，前>0
- * - 通道3 (ch_val[3]): 备用左右方向控制（单手模式）
- * - 通道4 (ch_val[4]): 遥控使能开关，低档/低位=使能
- * - 通道6 (ch_val[6]): 单手模式开关，高档/高位=启用
- * - 通道7 (ch_val[7]): 低速模式开关，高档/高位=启用
+ * - CH1 (ch_val[0]): 左右方向控制，右>0
+ * - CH3 (ch_val[2]): 前后方向控制，前>0
+ * - CH4 (ch_val[3]): 备用左右方向控制（单手模式）
+ * - CH5 (ch_val[4]): 遥控使能开关，低档/低位=使能
+ * - CH7 (ch_val[6]): 放线器方向开关
+ * - CH8 (ch_val[7]): 低速模式开关，高档/高位=启用
  */
 uint8_t parse_chan_val(uint16_t* ch_val)
 {
     static bool last_remote_enabled = false;
-    static bool last_single_hand_mode = false;
+    static bool remote_state_initialized = false;
     static bool last_low_speed_mode = false;
     static bool claim_window_active = false;
-    static uint32_t claim_start_tick = 0;
 
     // ⚡ 性能优化：始终执行控制逻辑，确保实时响应
     // 移除变化检测的限制，让CAN总线始终发送最新的控制命令
@@ -122,35 +166,38 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             first_run = false;
         }
 
-        int8_t sp_fb = chg_val(ch_val[2]); // 前后分量，向前>0
-        int8_t sp_lr = chg_val(ch_val[0]); // 左右分量，向右>0
+        int8_t sp_fb = chg_val(ch_val[T12D_LOGICAL_THROTTLE_CHANNEL]); // CH3 前后分量，向前>0
+        int8_t sp_lr = chg_val(ch_val[T12D_LOGICAL_STEERING_CHANNEL]); // CH1 左右分量，向右>0
+#if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
+        // T12D 轴向按 main.h 中的显式配置适配，便于按现场手感单独校正前后/左右。
+#if T12D_INVERT_THROTTLE_AXIS
+        sp_fb = -sp_fb;
+#endif
+#if T12D_INVERT_STEERING_AXIS
+        sp_lr = -sp_lr;
+#endif
+#endif
 
         bool current_remote_enabled = (ch_val[4] <= 1100);
+        // CH7 现用于放线器正/反转切换，保留原底盘 CH8 低速语义。
+        bool current_single_hand = false;
 #if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
-        // T12D 的三段开关端点可能存在少量浮动，使用阈值判断更稳妥。
-        bool current_single_hand = t12d_receiver_switch_is_high(ch_val[6]);
         bool current_low_speed = t12d_receiver_switch_is_high(ch_val[7]);
 #else
-        bool current_single_hand = (ch_val[6] == 1950);
         bool current_low_speed = (ch_val[7] == 1950);
 #endif
 
-        if (current_remote_enabled != last_remote_enabled) {
+        if (!remote_state_initialized || current_remote_enabled != last_remote_enabled) {
             if (current_remote_enabled) {
                 claim_window_active = true;
-                claim_start_tick = xTaskGetTickCount();
-                ESP_LOGI(TAG, "🔒 Remote control: ENABLED (CH4=%d) - claim window %dms",
+                ESP_LOGI(TAG, "🔒 Remote control: ENABLED (CH5=%d) - claim window %dms",
                          ch_val[4], CLAIM_WINDOW_MS);
             } else {
                 claim_window_active = false;
-                ESP_LOGI(TAG, "🔒 Remote control: DISABLED (CH4=%d)", ch_val[4]);
+                ESP_LOGI(TAG, "🔒 Remote control: DISABLED (CH5=%d)", ch_val[4]);
             }
             last_remote_enabled = current_remote_enabled;
-        }
-
-        if (current_single_hand != last_single_hand_mode) {
-            ESP_LOGI(TAG, "🤟 Single-hand mode: %s", current_single_hand ? "ON" : "OFF");
-            last_single_hand_mode = current_single_hand;
+            remote_state_initialized = true;
         }
 
         if (current_low_speed != last_low_speed_mode) {
@@ -158,15 +205,13 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             last_low_speed_mode = current_low_speed;
         }
 
-        // 🔒 遥控未使能时必须明确下发停止，避免驱动器保持上一条速度命令
-        if (!current_remote_enabled) {
-            channel_parse_force_stop("remote disabled");
-            update_last_channels(ch_val);
-            return 0;
-        }
-
         if (current_single_hand) {
             sp_lr = chg_val(ch_val[3]); // 左右分量，向右>0
+#if REMOTE_INPUT_PROFILE == REMOTE_INPUT_PROFILE_T12D
+#if T12D_INVERT_STEERING_AXIS
+            sp_lr = -sp_lr;
+#endif
+#endif
         }
 
         if (current_low_speed) {
@@ -248,16 +293,16 @@ uint8_t parse_chan_val(uint16_t* ch_val)
                              sp_fb, left_speed, right_speed);
                 }
             } else if (sp_lr > 0) {
-                // 差速右转
-                left_speed = sp_fb;
-                right_speed = cal_offset(sp_fb, sp_lr);
+                // 差速右转：后退时需要对调减速侧，保证 yaw 方向与原地右转一致。
+                left_speed = (sp_fb > 0) ? sp_fb : cal_offset(sp_fb, sp_lr);
+                right_speed = (sp_fb > 0) ? cal_offset(sp_fb, sp_lr) : sp_fb;
                 if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "↗️ DIFFERENTIAL RIGHT - Left:%d Right:%d", left_speed, right_speed);
                 }
             } else {
-                // 差速左转
-                left_speed = cal_offset(sp_fb, sp_lr);
-                right_speed = sp_fb;
+                // 差速左转：后退时需要对调减速侧，保证 yaw 方向与原地左转一致。
+                left_speed = (sp_fb > 0) ? cal_offset(sp_fb, sp_lr) : sp_fb;
+                right_speed = (sp_fb > 0) ? sp_fb : cal_offset(sp_fb, sp_lr);
                 if (abs(left_speed - last_left_speed) > SPEED_LOG_THRESHOLD || abs(right_speed - last_right_speed) > SPEED_LOG_THRESHOLD) {
                     ESP_LOGI(TAG, "↖️ DIFFERENTIAL LEFT - Left:%d Right:%d", left_speed, right_speed);
                 }
@@ -271,13 +316,63 @@ uint8_t parse_chan_val(uint16_t* ch_val)
             ESP_LOGI(TAG, "✅ Claim window skipped, CAN control enabled immediately");
         }
 
-        // 执行电机控制并发送CAN消息（包括速度为0的停止命令）
-        // 注意：必须始终发送命令，否则从运动到停止时电机无法收到停止指令
-        intf_move(left_speed, right_speed);
+        if (current_remote_enabled) {
+            // 执行电机控制并发送CAN消息（包括速度为0的停止命令）
+            // 注意：必须始终发送命令，否则从运动到停止时电机无法收到停止指令
+            intf_move(left_speed, right_speed);
 
-        // 更新上次速度值
-        last_left_speed = left_speed;
-        last_right_speed = right_speed;
+            // 更新上次速度值
+            last_left_speed = left_speed;
+            last_right_speed = right_speed;
+        } else {
+            // 遥控未使能时不要先下发本周期速度再补零速，避免启动/切换瞬间出现竞态。
+            if (last_left_speed != 0 || last_right_speed != 0) {
+                ESP_LOGW(TAG, "🛑 Track stop: remote disabled (CH5=%u)",
+                         (unsigned)ch_val[4]);
+            }
+            intf_move(0, 0);
+            last_left_speed = 0;
+            last_right_speed = 0;
+        }
+
+#if ENABLE_PAYOUT_DEVICE
+        // ============================================================
+        // 放线设备控制（与履带车完全独立，共用 SBUS 通道）
+        // - CH7  (ch_val[6])：方向开关（高档=正转，低档=反转，中位=停止）
+        // - CH10 (ch_val[9])：速度大小（最小=0，最大=满速）
+        // 限频 PAYOUT_SEND_INTERVAL_MS，并在状态变化时立即下发一次
+        // ============================================================
+        static int8_t last_payout_direction = 0;
+        static uint32_t last_payout_send_tick = 0;
+        int8_t payout_direction = payout_direction_sign(ch_val[PAYOUT_DIRECTION_CHANNEL_IDX]);
+        bool payout_state_changed = (payout_direction != last_payout_direction);
+        uint16_t payout_channel_value =
+            payout_speed_channel_to_signed_value(ch_val[PAYOUT_SPEED_CHANNEL_IDX], payout_direction);
+
+        if (payout_state_changed) {
+            const char *direction_text = "STOP";
+            if (payout_direction > 0) {
+                direction_text = "FORWARD";
+            } else if (payout_direction < 0) {
+                direction_text = "REVERSE";
+            }
+
+            ESP_LOGI(TAG, "🪢 Payout direction: %s (CH%u=%u)",
+                     direction_text,
+                     (unsigned)(PAYOUT_DIRECTION_CHANNEL_IDX + 1U),
+                     (unsigned)ch_val[PAYOUT_DIRECTION_CHANNEL_IDX]);
+            last_payout_direction = payout_direction;
+        }
+
+        uint32_t now_tick = xTaskGetTickCount();
+        bool should_send = payout_state_changed ||
+            ((now_tick - last_payout_send_tick) >= pdMS_TO_TICKS(PAYOUT_SEND_INTERVAL_MS));
+
+        if (should_send) {
+            drv_payout_send_channel_pwm(payout_channel_value);
+            last_payout_send_tick = now_tick;
+        }
+#endif /* ENABLE_PAYOUT_DEVICE */
 
         // 更新保存的通道值（用于变化检测和日志输出）
         update_last_channels(ch_val);

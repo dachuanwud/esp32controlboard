@@ -25,21 +25,27 @@ static void sbus_uart_task(void *pvParameters)
 {
     uart_event_t event;
     uint8_t data;
+    bool wdt_registered = false;
 
     static uint32_t byte_count = 0;
+    const TickType_t no_signal_warn_delay = pdMS_TO_TICKS(5000);
+    TickType_t task_start_time = xTaskGetTickCount();
     // 记录最后一次成功接收完整SBUS帧的时间（用于超时检测）
     static TickType_t last_frame_time = 0;
     static bool first_frame_received = false;
     // 错误统计（用于诊断）
     static uint32_t header_error_count = 0;
     static uint32_t footer_error_count = 0;
-    ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO22...");
-    ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
-    ESP_LOGI(TAG, "🔌 Hardware: Connect SBUS signal to GPIO22, GND to GND");
 
-    // 🐕 订阅任务看门狗监控
+    ESP_LOGI(TAG, "🚀 SBUS UART task started, waiting for data on GPIO%" PRIu32 "...", (uint32_t)SBUS_RX_PIN);
+    ESP_LOGI(TAG, "📡 UART2 Config: 100000bps, 8E2, RX_INVERT enabled");
+    ESP_LOGI(TAG, "🔌 Hardware: Connect SBUS signal to GPIO%" PRIu32 ", GND to GND",
+             (uint32_t)SBUS_RX_PIN);
+
+    // 订阅任务看门狗；只有订阅成功才执行 reset，避免 "task not found" 刷屏
     esp_err_t wdt_ret = esp_task_wdt_add(NULL);
     if (wdt_ret == ESP_OK) {
+        wdt_registered = true;
         ESP_LOGI(TAG, "🐕 SBUS UART任务已加入看门狗监控");
     } else {
         ESP_LOGW(TAG, "⚠️ SBUS UART任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
@@ -73,11 +79,13 @@ static void sbus_uart_task(void *pvParameters)
             }
         }
 
-        // 移除GPIO22直接读取，避免与UART2功能冲突
-        // GPIO22现在专门用于UART2接收SBUS数据
+        // 移除SBUS RX引脚直接读取，避免与UART2功能冲突
+        // SBUS_RX_PIN 现在专门用于UART2接收SBUS数据
 
         if (xQueueReceive(sbus_uart_queue, (void *)&event, pdMS_TO_TICKS(10))) {
-            esp_task_wdt_reset();
+            if (wdt_registered) {
+                esp_task_wdt_reset();
+            }
             last_event_time = xTaskGetTickCount();
             ESP_LOGD(TAG, "📨 UART event received at tick: %" PRIu32, last_event_time);
             if (event.type == UART_DATA) {
@@ -170,7 +178,9 @@ static void sbus_uart_task(void *pvParameters)
                 ESP_LOGD(TAG, "UART event type: %d", event.type);
             }
         } else {
-            esp_task_wdt_reset();
+            if (wdt_registered) {
+                esp_task_wdt_reset();
+            }
             // 超时，没有接收到UART事件
             // 基于实际SBUS帧接收时间判断超时，而不是基于UART事件队列超时
             if (first_frame_received) {
@@ -193,7 +203,8 @@ static void sbus_uart_task(void *pvParameters)
                             // 缓冲区空 - 可能是硬件信号丢失
                             ESP_LOGW(TAG, "⚠️ No SBUS frame for %lu ms - 信号可能丢失 (UART缓冲区空)", 
                                     (unsigned long)(time_since_last_frame * portTICK_PERIOD_MS));
-                            ESP_LOGW(TAG, "📡 检查: 1)接收机电源 2)遥控器开启 3)GPIO22连接");
+                            ESP_LOGW(TAG, "📡 检查: 1)接收机电源 2)遥控器开启 3)GPIO%" PRIu32 "连接",
+                                     (uint32_t)SBUS_RX_PIN);
                         } else {
                             // 缓冲区有数据但无有效帧 - 可能是数据错误
                             ESP_LOGW(TAG, "⚠️ No SBUS frame for %lu ms - 帧解析失败 (缓冲区%u字节)", 
@@ -210,6 +221,20 @@ static void sbus_uart_task(void *pvParameters)
                         frame_timeout_count++;
                         (void)frame_timeout_count;  // 避免未使用警告
                     }
+                }
+            }
+            else {
+                // 启动后若长期没有任何完整SBUS帧，主动告警（原逻辑在首帧前不会报警）
+                TickType_t current_time = xTaskGetTickCount();
+                static TickType_t last_no_signal_warn = 0;
+                if ((current_time - task_start_time) > no_signal_warn_delay &&
+                    (current_time - last_no_signal_warn) > pdMS_TO_TICKS(5000)) {
+                    size_t uart_buf_len = 0;
+                    uart_get_buffered_data_len(UART_SBUS, &uart_buf_len);
+                    ESP_LOGW(TAG, "⚠️ 启动后未收到任何SBUS完整帧 (RX=GPIO%" PRIu32 ", UART缓冲区=%" PRIu32 "字节)",
+                             (uint32_t)SBUS_RX_PIN, (uint32_t)uart_buf_len);
+                    ESP_LOGW(TAG, "📡 请检查: 接收机供电、遥控器是否开机、SBUS线是否接到GPIO%" PRIu32, (uint32_t)SBUS_RX_PIN);
+                    last_no_signal_warn = current_time;
                 }
             }
 
@@ -248,9 +273,9 @@ esp_err_t sbus_init(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_SBUS, 2048, 0, 50, &sbus_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_SBUS, &uart_config));
 
-    // 设置GPIO22作为UART2接收引脚
+    // 设置SBUS_RX_PIN作为UART2接收引脚
     // 用于接收SBUS信号（来自遥控接收机）
-    ESP_ERROR_CHECK(uart_set_pin(UART_SBUS, UART_PIN_NO_CHANGE, GPIO_NUM_22, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_set_pin(UART_SBUS, UART_PIN_NO_CHANGE, SBUS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     // SBUS使用反相逻辑，硬件无反相器时必须启用软件反相
     ESP_ERROR_CHECK(uart_set_line_inverse(UART_SBUS, UART_SIGNAL_RXD_INV));
@@ -267,7 +292,7 @@ esp_err_t sbus_init(void)
     xTaskCreate(sbus_uart_task, "sbus_uart_task", 4096, NULL, 12, NULL);
 
     ESP_LOGI(TAG, "✅ UART2 initialized successfully:");
-    ESP_LOGI(TAG, "   📍 RX Pin: GPIO22");
+    ESP_LOGI(TAG, "   📍 RX Pin: GPIO%" PRIu32, (uint32_t)SBUS_RX_PIN);
     ESP_LOGI(TAG, "   📡 Config: 100000bps, 8E2");
     ESP_LOGI(TAG, "   🔄 Signal inversion: ENABLED");
     ESP_LOGI(TAG, "   🚀 Ready to receive SBUS data!");
@@ -349,6 +374,9 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     static uint16_t last_channels[LEN_CHANEL] = {0};
     static bool first_sbus_data = true;
     static uint32_t frame_count = 0;
+#if !ENABLE_SBUS_DEBUG
+    static TickType_t last_sbus_key_log_time = 0;
+#endif
     bool significant_change = false;
 
     frame_count++;
@@ -365,24 +393,37 @@ uint8_t parse_sbus_msg(uint8_t* sbus_data, uint16_t* channel)
     }
 
 #if ENABLE_SBUS_DEBUG
-    // 调试模式：有变化时打印，否则每500帧打印一次（约7秒）
-    if (significant_change || first_sbus_data) {
-        // 🔔 检测到变化时打印
-        ESP_LOGI(TAG, "🔔 SBUS变化! CH0:%4d CH2:%4d CH3:%4d CH4:%4d",
-                 channel[0], channel[2], channel[3], channel[4]);
-    } else if (frame_count % 500 == 0) {
-        // 每500帧打印一次心跳（约7秒，71Hz）
-        ESP_LOGI(TAG, "💓 SBUS心跳 #%lu - CH0:%4d CH2:%4d CH4:%4d",
-                 frame_count, channel[0], channel[2], channel[4]);
+    // 调试模式：每约7秒打印一次通道快照，避免正常遥控时刷屏。
+    if (frame_count % 500 == 0) {
+        ESP_LOGD(TAG, "CH1-12: %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d",
+                 channel[0], channel[1], channel[2], channel[3],
+                 channel[4], channel[5], channel[6], channel[7],
+                 channel[8], channel[9], channel[10], channel[11]);
+        ESP_LOGD(TAG, "Payout key channels: CH7(dir)=%4d CH10(speed)=%4d",
+                 channel[6], channel[9]);
     }
+
+    // 避免未使用变量警告
+    (void)significant_change;
+    (void)first_sbus_data;
 #else
-    // 正常模式：只在有显著变化时打印关键通道
-    if (first_sbus_data || significant_change) {
-        ESP_LOGI(TAG, "🔔 SBUS变化! CH0:%4u CH2:%4u CH3:%4u CH4:%4u",
-                 channel[0], channel[2], channel[3], channel[4]);
-    } else if (frame_count % 500 == 0) {
-        // 每500帧打印一次心跳（约7秒）
-        ESP_LOGI(TAG, "💓 SBUS心跳 #%lu", frame_count);
+    // 正常模式：首次或显著变化时打印关键通道；连续拨杆时最多500ms一条。
+    // CH5 为遥控使能开关（1050=使能，1500/1950=禁用）
+    TickType_t now = xTaskGetTickCount();
+    bool should_log_key_channels =
+        first_sbus_data ||
+        (significant_change &&
+         (now - last_sbus_key_log_time) >= pdMS_TO_TICKS(500));
+    if (should_log_key_channels) {
+        ESP_LOGI(TAG, "🎮 SBUS帧#%lu - 关键通道: CH1(LR):%4u CH3(FB):%4u CH4:%4u CH5:%4u CH7:%4u CH8:%4u",
+                 frame_count, channel[0], channel[2], channel[3], channel[4], channel[6], channel[7]);
+        last_sbus_key_log_time = now;
+    } else {
+        // 每100帧打印一次状态（从10增加到100），减少日志负担
+        if (frame_count % 100 == 0) {
+            ESP_LOGD(TAG, "🎮 SBUS活跃 - 帧#%lu: CH1(LR):%4u CH3(FB):%4u CH5:%4u",
+                     frame_count, channel[0], channel[2], channel[4]);
+        }
     }
 #endif
 

@@ -3,6 +3,7 @@
 #include "motor_driver.h"
 #include "sbus.h"
 #include "t12d_receiver.h"
+#include "drv_payout.h"
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "ota_manager.h"
@@ -23,6 +24,20 @@
 #define TASK_WDT_PANIC_ENABLE   true    // 超时时触发panic重启
 
 static const char *TAG = "MAIN";
+
+static void gpio_add_to_mask_if_enabled(uint64_t *mask, gpio_num_t pin)
+{
+    if (pin != GPIO_NUM_NC) {
+        *mask |= (1ULL << pin);
+    }
+}
+
+static void gpio_set_level_if_enabled(gpio_num_t pin, uint32_t level)
+{
+    if (pin != GPIO_NUM_NC) {
+        gpio_set_level(pin, level);
+    }
+}
 
 #if ENABLE_CMD_VEL
 // CMD_VEL接收缓冲区
@@ -85,7 +100,7 @@ static uint8_t cmd_queue_static_storage[20 * sizeof(motor_cmd_t)];
 #endif
 
 // 全局状态变量（用于Web接口）
-uint16_t g_last_sbus_channels[16] = {1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+uint16_t g_last_sbus_channels[16] = {1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500};
 int8_t g_last_motor_left = 0;
 int8_t g_last_motor_right = 0;
 uint32_t g_last_sbus_update = 0;
@@ -107,7 +122,6 @@ static void init_global_variables(void)
     for (int i = 0; i < 16; i++) {
         g_last_sbus_channels[i] = 1500; // SBUS中位值
     }
-    g_last_sbus_channels[2] = 1000; // 油门通道初始化为最低值
 
     // 初始化电机状态
     g_last_motor_left = 0;
@@ -268,6 +282,8 @@ static esp_err_t data_integration_get_can_status_callback(bool* connected, uint3
 }
 #endif // ENABLE_DATA_INTEGRATION
 
+// 历史放线串口发送逻辑已下线，统一走 channel_parse -> drv_payout。
+
 /**
  * SBUS数据处理任务
  * 接收SBUS数据并通过队列发送给控制任务
@@ -295,7 +311,6 @@ static void sbus_process_task(void *pvParameters)
     } else {
         ESP_LOGW(TAG, "⚠️ SBUS处理任务加入看门狗失败: %s", esp_err_to_name(wdt_ret));
     }
-
     while (1) {
         BaseType_t sbus_ready = sbus_wait_data_ready(pdMS_TO_TICKS(200));
         esp_task_wdt_reset();
@@ -318,7 +333,6 @@ static void sbus_process_task(void *pvParameters)
 #endif
 
             // SBUS通道值已在parse_sbus_msg函数中打印，此处不重复打印
-
             // 保存SBUS状态用于Web接口
             memcpy(g_last_sbus_channels, adapted_ch_val, sizeof(adapted_ch_val));
             g_last_sbus_update = xTaskGetTickCount();
@@ -859,8 +873,8 @@ static void status_monitor_task(void *pvParameters)
             red_led_state = !red_led_state;
             
             // 控制两组LED的红色，同步闪烁
-            gpio_set_level(LED1_RED_PIN, red_led_state ? 0 : 1);  // 0=点亮, 1=熄灭
-            gpio_set_level(LED2_RED_PIN, red_led_state ? 0 : 1);
+            gpio_set_level_if_enabled(LED1_RED_PIN, red_led_state ? 0 : 1);  // 0=点亮, 1=熄灭
+            gpio_set_level_if_enabled(LED2_RED_PIN, red_led_state ? 0 : 1);
         }
 
         // 系统状态监控 - 减少日志频率，每30秒输出一次系统状态
@@ -890,38 +904,38 @@ static void led_power_on_blink(void)
     // 闪烁3次：红→绿→蓝循环
     for (int i = 0; i < blink_count; i++) {
         // 熄灭所有LED
-        gpio_set_level(LED1_RED_PIN, 1);
-        gpio_set_level(LED1_GREEN_PIN, 1);
-        gpio_set_level(LED1_BLUE_PIN, 1);
-        gpio_set_level(LED2_RED_PIN, 1);
-        gpio_set_level(LED2_GREEN_PIN, 1);
-        gpio_set_level(LED2_BLUE_PIN, 1);
+        gpio_set_level_if_enabled(LED1_RED_PIN, 1);
+        gpio_set_level_if_enabled(LED1_GREEN_PIN, 1);
+        gpio_set_level_if_enabled(LED1_BLUE_PIN, 1);
+        gpio_set_level_if_enabled(LED2_RED_PIN, 1);
+        gpio_set_level_if_enabled(LED2_GREEN_PIN, 1);
+        gpio_set_level_if_enabled(LED2_BLUE_PIN, 1);
         vTaskDelay(pdMS_TO_TICKS(blink_duration_ms));
         
         // 根据循环次数点亮不同颜色的LED
         if (i % 3 == 0) {
             // 红色
-            gpio_set_level(LED1_RED_PIN, 0);
-            gpio_set_level(LED2_RED_PIN, 0);
+            gpio_set_level_if_enabled(LED1_RED_PIN, 0);
+            gpio_set_level_if_enabled(LED2_RED_PIN, 0);
         } else if (i % 3 == 1) {
             // 绿色
-            gpio_set_level(LED1_GREEN_PIN, 0);
-            gpio_set_level(LED2_GREEN_PIN, 0);
+            gpio_set_level_if_enabled(LED1_GREEN_PIN, 0);
+            gpio_set_level_if_enabled(LED2_GREEN_PIN, 0);
         } else {
             // 蓝色
-            gpio_set_level(LED1_BLUE_PIN, 0);
-            gpio_set_level(LED2_BLUE_PIN, 0);
+            gpio_set_level_if_enabled(LED1_BLUE_PIN, 0);
+            gpio_set_level_if_enabled(LED2_BLUE_PIN, 0);
         }
         vTaskDelay(pdMS_TO_TICKS(blink_duration_ms));
     }
     
     // 最后熄灭所有LED
-    gpio_set_level(LED1_RED_PIN, 1);
-    gpio_set_level(LED1_GREEN_PIN, 1);
-    gpio_set_level(LED1_BLUE_PIN, 1);
-    gpio_set_level(LED2_RED_PIN, 1);
-    gpio_set_level(LED2_GREEN_PIN, 1);
-    gpio_set_level(LED2_BLUE_PIN, 1);
+    gpio_set_level_if_enabled(LED1_RED_PIN, 1);
+    gpio_set_level_if_enabled(LED1_GREEN_PIN, 1);
+    gpio_set_level_if_enabled(LED1_BLUE_PIN, 1);
+    gpio_set_level_if_enabled(LED2_RED_PIN, 1);
+    gpio_set_level_if_enabled(LED2_GREEN_PIN, 1);
+    gpio_set_level_if_enabled(LED2_BLUE_PIN, 1);
 }
 
 /**
@@ -954,8 +968,14 @@ static void gpio_init(void)
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << LED1_RED_PIN) | (1ULL << LED1_GREEN_PIN) | (1ULL << LED1_BLUE_PIN) |
-                          (1ULL << LED2_RED_PIN) | (1ULL << LED2_GREEN_PIN) | (1ULL << LED2_BLUE_PIN);
+    uint64_t led_pin_mask = 0;
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED1_RED_PIN);
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED1_GREEN_PIN);
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED1_BLUE_PIN);
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED2_RED_PIN);
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED2_GREEN_PIN);
+    gpio_add_to_mask_if_enabled(&led_pin_mask, LED2_BLUE_PIN);
+    io_conf.pin_bit_mask = led_pin_mask;
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
@@ -965,8 +985,9 @@ static void gpio_init(void)
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pin_bit_mask = (1ULL << KEY2_PIN);  // 只配置KEY2，跳过GPIO0
     io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 1;
+    io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
+    ESP_LOGI(TAG, "ℹ️ KEY2使用GPIO35，仅输入脚无内部上拉；如需按键请使用外部10KΩ上拉/下拉");
     
     // ====================================================================
     // 🛡️ GPIO0 处理策略 - 为确保重启可靠性，不对 GPIO0 做任何配置
@@ -988,14 +1009,14 @@ static void gpio_init(void)
 
     // 设置LED初始状态 - 共阳极LED，高电平(1)熄灭，低电平(0)点亮
     // LED1组初始状态 - 全部熄灭
-    gpio_set_level(LED1_RED_PIN, 1);
-    gpio_set_level(LED1_GREEN_PIN, 1);
-    gpio_set_level(LED1_BLUE_PIN, 1);
+    gpio_set_level_if_enabled(LED1_RED_PIN, 1);
+    gpio_set_level_if_enabled(LED1_GREEN_PIN, 1);
+    gpio_set_level_if_enabled(LED1_BLUE_PIN, 1);
 
     // LED2组初始状态 - 全部熄灭
-    gpio_set_level(LED2_RED_PIN, 1);
-    gpio_set_level(LED2_GREEN_PIN, 1);
-    gpio_set_level(LED2_BLUE_PIN, 1);
+    gpio_set_level_if_enabled(LED2_RED_PIN, 1);
+    gpio_set_level_if_enabled(LED2_GREEN_PIN, 1);
+    gpio_set_level_if_enabled(LED2_BLUE_PIN, 1);
     
     // 执行上电LED闪烁指示
     led_power_on_blink();
@@ -1233,6 +1254,16 @@ void app_main(void)
     motor_driver_init();
     printf("Motor driver initialized OK\n");
     printf("Free heap after motor: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+
+#if ENABLE_PAYOUT_DEVICE
+    // 初始化放线设备（UART1 + RS485 Modbus RTU）
+    printf("Initializing payout device (RS485)...\n");
+    if (drv_payout_init() == ESP_OK) {
+        printf("Payout device initialized OK\n");
+    } else {
+        printf("⚠️ Payout device init FAILED, CH6 control will be ignored\n");
+    }
+#endif
 
     // 初始化OTA管理器
     ota_config_t ota_config = {
